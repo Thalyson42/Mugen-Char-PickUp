@@ -31,11 +31,12 @@ A wiki do Ikemen GO avisa que **no Android não se deve editar `data/select.def`
 ## Limitações conhecidas
 
 - **Pasta dentro de `Android/data/...` não funciona** em Android 11+ (o sistema bloqueia o acesso de outros apps). A pasta do jogo precisa estar em um lugar acessível (armazenamento interno, Documentos...).
-- **Ainda não mostra os retratos** dos personagens: as células mostram o nome. Ler o retrato (sprite 9000,0 do `.sff`) é a próxima etapa.
+- **Retratos**: cada célula mostra o *portrait* (sprite 9000,0 do `.sff`, o mesmo da tela de seleção do jogo). Lê SFF v1 e v2 (RLE8, RLE5, LZ5 e PNG). Se o personagem não tiver esse sprite, ou o `.sff` não puder ser lido, a célula mostra o nome. Os retratos são carregados só quando a célula aparece na tela.
 - Posição vazia é gravada como a linha `empty`. Se o seu screenpack/versão do Ikemen GO tratar isso de outro jeito, o marcador fica numa constante só (`SelectDef.EMPTY_TOKEN`).
 - Personagens com `exclude=1` não aparecem no grid e, ao salvar, são escritos depois das células do grid.
 - Blocos `slot = { ... }` aparecem como uma célula só (nome do primeiro + `×N`) e se movem/removem em conjunto.
-- Ao arrastar não há rolagem automática: para mover para longe, aumente o espaço ou mova em etapas.
+- Para arrastar: **segure** a célula até sentir a vibração e então arraste. Perto da borda de cima/baixo o grid rola sozinho.
+- Os retratos foram verificados só com arquivos `.sff` montados nos testes, não com personagens reais de vários autores. Se algum aparecer como nome ou com cores erradas, me diga qual personagem.
 - Comentários logo acima de uma entrada viajam com ela quando ela é movida.
 
 ## Estrutura
@@ -49,7 +50,7 @@ Compilar localmente: abra a pasta no Android Studio, ou `./gradlew :core:test :a
 
 ## Próximos passos sugeridos
 
-1. Retratos reais no grid (leitor de `.sff` v1/v2).
-2. Rolagem automática ao arrastar e seleção de vários personagens.
+1. Seleção de vários personagens de uma vez.
+2. Cache dos retratos em disco (hoje são relidos a cada vez que o app abre).
 3. Escolher entre vários `select.def` encontrados.
 4. Editar parâmetros do personagem (stage, `order`, `music`...).

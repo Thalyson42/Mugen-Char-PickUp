@@ -117,6 +117,9 @@ fun App(
                         selected = s.selected,
                         onSelect = vm::select,
                         onSwap = vm::swap,
+                        peekFace = vm::peekFace,
+                        loadFace = { vm.face(it) },
+                        faceEpoch = s.portraitEpoch,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                     BottomBar(
