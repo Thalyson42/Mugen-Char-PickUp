@@ -10,6 +10,7 @@ enum class CellKind { CHAR, RANDOM, SKIP, SLOT, EMPTY }
  * @param leading comentários/linhas em branco logo acima; viajam junto com a entrada.
  * @param key     pasta do personagem em minúsculas (ex.: "kfm"), usada para comparar.
  * @param members todas as chaves contidas na célula (mais de uma em blocos `slot`).
+ * @param entry   nome do personagem como está no select.def ("kfm" ou "ryu/ryu_alt.def"); em `slot`, o do primeiro.
  */
 data class Cell(
     val kind: CellKind,
@@ -18,13 +19,17 @@ data class Cell(
     val key: String? = null,
     val members: Set<String> = emptySet(),
     val label: String = "",
+    val entry: String? = null,
 ) {
     companion object {
         /** Cria uma célula de personagem a partir do texto da entrada (ex.: "kfm" ou "ryu/ryu_alt.def"). */
         fun forEntry(entry: String): Cell {
             val name = entry.trim()
             val key = SelectDef.keyOf(name)
-            return Cell(CellKind.CHAR, listOf(name), key = key, members = setOf(key), label = SelectDef.displayName(name))
+            return Cell(
+                CellKind.CHAR, listOf(name), key = key, members = setOf(key),
+                label = SelectDef.displayName(name), entry = name,
+            )
         }
     }
 }
@@ -138,6 +143,7 @@ class SelectDef(
                     i++
                     val keys = LinkedHashSet<String>()
                     var label = ""
+                    var firstEntry: String? = null
                     while (i < end) {
                         val r = lines[i]
                         block.add(r)
@@ -148,9 +154,10 @@ class SelectDef(
                             val n = nameOf(c)
                             keys.add(keyOf(n))
                             if (label.isEmpty()) label = displayName(n)
+                            if (firstEntry == null) firstEntry = n
                         }
                     }
-                    cells.add(Cell(CellKind.SLOT, block, pending, keys.firstOrNull(), keys, label))
+                    cells.add(Cell(CellKind.SLOT, block, pending, keys.firstOrNull(), keys, label, firstEntry))
                     pending = ArrayList()
                     continue
                 }
@@ -163,7 +170,7 @@ class SelectDef(
                     lower == "skipslot" || lower == "dummyslot" -> Cell(CellKind.SKIP, listOf(raw), pending, label = lower)
                     else -> {
                         val key = keyOf(name)
-                        Cell(CellKind.CHAR, listOf(raw), pending, key, setOf(key), displayName(name))
+                        Cell(CellKind.CHAR, listOf(raw), pending, key, setOf(key), displayName(name), name)
                     }
                 }
                 pending = ArrayList()

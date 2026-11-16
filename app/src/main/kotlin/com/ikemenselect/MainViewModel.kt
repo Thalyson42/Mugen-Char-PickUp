@@ -2,16 +2,25 @@ package com.ikemenselect
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ikemenselect.core.Candidate
 import com.ikemenselect.core.Cell
+import com.ikemenselect.core.CharFiles
 import com.ikemenselect.core.GridOps
 import com.ikemenselect.core.Locator
+import com.ikemenselect.core.PngDecoder
+import com.ikemenselect.core.Portrait
 import com.ikemenselect.core.SelectDef
+import com.ikemenselect.core.SffReader
 import com.ikemenselect.core.isBlankCell
 import com.ikemenselect.saf.SafTree
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,8 +28,27 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+
+/** Retrato (sprite 9000,0) de um personagem: ainda carregando, indisponível, ou pronto. */
+sealed interface Face {
+    object Loading : Face
+    object Missing : Face
+    class Image(val bitmap: ImageBitmap) : Face
+}
+
+/** PNG dentro de .sff (SFF v2, formatos 10/11/12) decodificado pelo Android. */
+private val AndroidPng = PngDecoder { bytes ->
+    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@PngDecoder null
+    val px = IntArray(bmp.width * bmp.height)
+    bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+    val out = Portrait(bmp.width, bmp.height, px)
+    bmp.recycle()
+    out
+}
 
 data class UiState(
     val loading: Boolean = false,
@@ -35,6 +63,8 @@ data class UiState(
     val canUndo: Boolean = false,
     val message: String? = null,
     val error: String? = null,
+    /** Muda quando os retratos precisam ser relidos (nova pasta, personagens novos). */
+    val portraitEpoch: Int = 0,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -55,17 +85,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    private var loaded: Loaded? = null
+    @Volatile private var loaded: Loaded? = null
     private var def: SelectDef? = null
     private var backupDone = false
     private val undoStack = ArrayDeque<List<Cell?>>()
     private val ioLock = Mutex()
+
+    private val faces = ConcurrentHashMap<String, Face>()
+    private val faceGate = Semaphore(3) // no máximo 3 .sff abertos ao mesmo tempo
 
     init {
         prefs.getString(KEY_TREE, null)?.let { load(Uri.parse(it)) }
     }
 
     fun charsFolderUri(): Uri? = loaded?.charsUri
+
+    // ---------- retratos ----------
+
+    /** Resposta imediata (sem I/O): o que já se sabe sobre o retrato desse personagem. */
+    fun peekFace(entry: String): Face = faces[entry.lowercase()] ?: Face.Loading
+
+    /** Carrega (ou devolve do cache) o retrato do personagem. */
+    suspend fun face(entry: String): Face {
+        val key = entry.lowercase()
+        faces[key]?.let { return it }
+        val l = loaded ?: return Face.Missing
+        val result = faceGate.withPermit {
+            withContext(Dispatchers.IO) { loadFace(l, entry) }
+        }
+        if (loaded === l) faces[key] = result // descarta se a pasta mudou enquanto carregava
+        return result
+    }
+
+    private fun loadFace(l: Loaded, entry: String): Face {
+        return try {
+            val rel = CharFiles.defPath(entry) ?: return Face.Missing
+            val defPath = "${l.charsName}/$rel"
+            val defNode = l.tree.resolveNode(defPath, cached = true)?.takeIf { !it.isDir } ?: return Face.Missing
+            val defText = l.tree.readNode(defNode.id) ?: return Face.Missing
+            val sprite = CharFiles.spriteFile(defText) ?: return Face.Missing
+            val sffPath = defPath.substringBeforeLast('/') + "/" + sprite
+            val sffNode = l.tree.resolveNode(sffPath, cached = true)?.takeIf { !it.isDir } ?: return Face.Missing
+            val portrait = l.tree.openSource(sffNode.id)?.use { SffReader.readPortrait(it, AndroidPng) }
+                ?: return Face.Missing
+            val bmp = Bitmap.createBitmap(portrait.argb, portrait.width, portrait.height, Bitmap.Config.ARGB_8888)
+            Face.Image(bmp.asImageBitmap())
+        } catch (e: Exception) {
+            Face.Missing
+        } catch (e: OutOfMemoryError) {
+            Face.Missing
+        }
+    }
+
+    /** Pastas de personagens podem ter mudado: esquece listagens e tenta de novo os que falharam. */
+    private fun refreshFaces() {
+        loaded?.tree?.clearCache()
+        faces.values.removeAll { it === Face.Missing }
+        _state.update { it.copy(portraitEpoch = it.portraitEpoch + 1) }
+    }
 
     // ---------- carregar ----------
 
@@ -84,6 +161,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val l = withContext(Dispatchers.IO) { openTree(uri) }
                 loaded = l
+                faces.clear()
                 backupDone = false
                 undoStack.clear()
                 val cells = GridOps.normalize(l.def.cells, l.rows, l.columns)
@@ -94,6 +172,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         folderName = l.tree.rootId.substringAfterLast(':').substringAfterLast('/'),
                         selectPath = l.selectPath, rows = l.rows, columns = l.columns,
                         cells = cells, selected = null, canUndo = false, error = null,
+                        portraitEpoch = it.portraitEpoch + 1,
                     )
                 }
             } catch (e: Exception) {
@@ -174,6 +253,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cur = _state.value.cells
         val target = if (cur.getOrNull(index).isBlankCell() && index in cur.indices) index
         else GridOps.firstBlank(cur).takeIf { it >= 0 } ?: cur.size
+        refreshFaces() // a pasta do personagem pode ser nova
         commit(GridOps.place(cur, target, cell), msg = "Adicionado: ${cell.label}", selected = target)
     }
 
@@ -186,6 +266,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val found = withContext(Dispatchers.IO) { scanChars(l) }
                 val result = GridOps.addMissing(_state.value.cells, found, d.knownKeys())
+                refreshFaces() // personagens novos: a listagem em cache ficou desatualizada
                 _state.update { it.copy(loading = false) }
                 if (result.added.isEmpty()) {
                     say("Nenhum personagem novo em ${l.charsName}.")
