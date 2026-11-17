@@ -12,7 +12,17 @@ interface ReadOnlyFs {
     fun listDirs(path: String): List<String> = emptyList()
 }
 
-data class Located(val selectPath: String, val systemDefPath: String?, val rows: Int?, val columns: Int?)
+data class Located(
+    val selectPath: String,
+    val systemDefPath: String?,
+    val rows: Int?,
+    val columns: Int?,
+    /** O select.def/system.def veio de uma escolha manual do usuário (e não da detecção automática). */
+    val selectManual: Boolean = false,
+    val systemManual: Boolean = false,
+    /** Avisos para mostrar ao usuário (ex.: escolha manual que não existe mais). */
+    val warnings: List<String> = emptyList(),
+)
 
 fun parseSystemDef(text: String): MotifInfo {
     var section = ""
@@ -66,13 +76,25 @@ object Locator {
      * Segundo a wiki do Ikemen GO, no Android a cópia dentro da pasta do motif
      * (ex.: data/ikemen1/select.def) é a que vale; por isso ela tem prioridade.
      */
-    fun locate(fs: ReadOnlyFs): Located? {
-        val systemPath = systemDefCandidates(fs).firstOrNull { fs.exists(it) }
+    fun locate(fs: ReadOnlyFs, selectOverride: String? = null, systemOverride: String? = null): Located? {
+        val warnings = ArrayList<String>()
+        fun clean(p: String?) = p?.replace('\\', '/')?.trim()?.trimStart('/')?.takeIf { it.isNotEmpty() }
+
+        // Escolha manual do usuário vale mais que a detecção; se o arquivo sumiu, volta ao automático.
+        val manualSystem = clean(systemOverride)
+        val systemOk = manualSystem?.let { fs.exists(it) } == true
+        if (manualSystem != null && !systemOk) warnings += "O system.def escolhido ($manualSystem) não existe mais; usando a detecção automática."
+        val systemPath = if (systemOk) manualSystem else systemDefCandidates(fs).firstOrNull { fs.exists(it) }
+
         val info = systemPath?.let { fs.readText(it) }?.let { parseSystemDef(it) }
         val motifDir = systemPath?.substringBeforeLast('/', "") ?: "data"
         val selectName = (info?.selectFile ?: "select.def").replace('\\', '/')
         val candidates = listOf("$motifDir/$selectName", "data/$selectName", "data/select.def").distinct()
-        val found = candidates.firstOrNull { fs.exists(it) } ?: return null
-        return Located(found, systemPath, info?.rows, info?.columns)
+
+        val manualSelect = clean(selectOverride)
+        val selectOk = manualSelect?.let { fs.exists(it) } == true
+        if (manualSelect != null && !selectOk) warnings += "O select.def escolhido ($manualSelect) não existe mais; usando a detecção automática."
+        val found = (if (selectOk) manualSelect else candidates.firstOrNull { fs.exists(it) }) ?: return null
+        return Located(found, systemPath, info?.rows, info?.columns, selectOk, systemOk, warnings)
     }
 }

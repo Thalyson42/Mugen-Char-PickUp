@@ -30,6 +30,7 @@ Basta instalar o APK novo (da aba **Releases** ou do artefato do **Actions**): o
 1. Abra o app e escolha a **pasta do Ikemen GO**, a mesma que contém `data/` e `chars/` (a que você escolheu quando o Ikemen GO pediu uma pasta).
 2. O app descobre sozinho qual `select.def` o jogo usa e o tamanho do grid (`rows` e `columns` do `system.def`). Se o grid ficar diferente do jogo, ajuste em **Menu → Tamanho do grid**.
 3. Use **Update char list** ou mexa no grid manualmente. Cada alteração é salva na hora no `select.def`.
+4. Se o app não achar (ou achar o arquivo errado), use **Menu → Escolher select.def…** e **Escolher system.def…**. A escolha fica salva e é usada sempre que o app abrir, até você trocar a pasta do jogo ou usar **Voltar à detecção automática**. O topo da tela mostra qual `select.def` e qual `system.def` estão em uso (e se foram escolhidos à mão).
 
 ### Tamanho do grid
 

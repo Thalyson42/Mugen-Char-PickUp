@@ -68,6 +68,45 @@ class LocatorTests {
     }
 
     @Test
+    fun manualSystemAndSelectOverridesWinOverDetection() {
+        val fs = Fs(
+            mapOf(
+                "data/ikemen1/system.def" to sys,
+                "data/ikemen1/select.def" to "[Characters]",
+                "data/outro/meu.def" to "[Files]\nselect = x.def\n[Select Info]\nrows = 3\ncolumns = 4\n",
+                "data/minha/lista.def" to "[Characters]",
+            ),
+        )
+        val loc = Locator.locate(fs, selectOverride = "Data/Minha/Lista.def", systemOverride = "data/outro/meu.def")!!
+        assertEquals("data/outro/meu.def", loc.systemDefPath)
+        assertEquals("Data/Minha/Lista.def", loc.selectPath)
+        assertEquals(3, loc.rows)
+        assertEquals(4, loc.columns)
+        assertEquals(true, loc.systemManual)
+        assertEquals(true, loc.selectManual)
+        assertEquals(emptyList(), loc.warnings)
+    }
+
+    @Test
+    fun onlyTheSelectOverrideKeepsAutomaticSystemDef() {
+        val fs = Fs(mapOf("data/ikemen1/system.def" to sys, "data/ikemen1/select.def" to "[Characters]", "data/b.def" to "[Characters]"))
+        val loc = Locator.locate(fs, selectOverride = "data/b.def")!!
+        assertEquals("data/b.def", loc.selectPath)
+        assertEquals("data/ikemen1/system.def", loc.systemDefPath)
+        assertEquals(false, loc.systemManual)
+    }
+
+    @Test
+    fun missingOverridesFallBackWithWarnings() {
+        val fs = Fs(mapOf("data/ikemen1/system.def" to sys, "data/ikemen1/select.def" to "[Characters]"))
+        val loc = Locator.locate(fs, selectOverride = "data/sumiu.def", systemOverride = "data/sumiu2.def")!!
+        assertEquals("data/ikemen1/system.def", loc.systemDefPath)
+        assertEquals("data/ikemen1/select.def", loc.selectPath)
+        assertEquals(false, loc.selectManual)
+        assertEquals(2, loc.warnings.size)
+    }
+
+    @Test
     fun parsesMotifFromIni() {
         assertEquals("data/ikemen1/system.def", motifFromIni("[Config]\nmotif=\"data/ikemen1/system.def\"\n"))
         assertNull(motifFromIni("[Config]\n;Motif = x\n"))

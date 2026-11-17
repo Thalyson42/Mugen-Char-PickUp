@@ -43,6 +43,8 @@ import com.ikemenselect.core.isBlankCell
 fun App(
     vm: MainViewModel,
     onPickFolder: () -> Unit,
+    onPickSelectDef: () -> Unit,
+    onPickSystemDef: () -> Unit,
     onPickDef: (Int) -> Unit,
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
@@ -80,6 +82,20 @@ fun App(
                                     text = { Text("Recarregar select.def") },
                                     onClick = { menuOpen = false; vm.reload() },
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Escolher select.def…") },
+                                    onClick = { menuOpen = false; onPickSelectDef() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Escolher system.def…") },
+                                    onClick = { menuOpen = false; onPickSystemDef() },
+                                )
+                                if (s.selectManual || s.systemManual) {
+                                    DropdownMenuItem(
+                                        text = { Text("Voltar à detecção automática") },
+                                        onClick = { menuOpen = false; vm.useAutoDetection() },
+                                    )
+                                }
                             }
                         }
                     }
@@ -98,10 +114,11 @@ fun App(
             } else {
                 Column(Modifier.fillMaxSize()) {
                     Text(
-                        text = "${s.folderName} · ${s.selectPath}",
+                        text = "select: ${s.selectPath}${if (s.selectManual) " (manual)" else ""}\n" +
+                            "system: ${s.systemPath.ifEmpty { "não encontrado" }}${if (s.systemManual) " (manual)" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
