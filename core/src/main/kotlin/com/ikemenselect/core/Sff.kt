@@ -23,7 +23,7 @@ class ByteArraySource(private val data: ByteArray) : RandomAccessSource {
 }
 
 /** Imagem decodificada: pixels em ARGB (não pré-multiplicado). */
-class Portrait(val width: Int, val height: Int, val argb: IntArray)
+class Portrait(val width: Int, val height: Int, val argb: IntArray, var info: String = "")
 
 /** Decodificador de PNG fornecido pela plataforma (usado pelos formatos 10, 11 e 12 do SFF v2). */
 fun interface PngDecoder {
@@ -67,7 +67,7 @@ object SffReader {
                 null
             } else {
                 when (h.u8(15)) {
-                    1 -> readV1(src, h, group, number)
+                    1 -> readV1(src, h, group, number)?.also { it.info = "SFF v1 · PCX" }
                     2 -> if (h.size >= 68) readV2(src, h, group, number, png) else null
                     else -> null
                 }
@@ -273,7 +273,7 @@ object SffReader {
         val base = if ((data.flags and 1) == 0) lofs else tofs
         val pos = base + data.offset
 
-        return when (data.format) {
+        val result = when (data.format) {
             0 -> {
                 val bytes = src.read(pos, minOf(data.size, MAX_BLOCK).toInt())
                 decodeRawV2(src, bytes, data, own.paletteIndex, paletteTable, paletteCount, lofs)
@@ -290,12 +290,22 @@ object SffReader {
                 applyPalette(px, w, hgt, pal)
             }
             10, 11, 12 -> {
-                if (png == null || data.size < 12) return null
+                if (data.size < 12) return null
                 val packed = src.read(pos + 4, minOf(data.size - 4, MAX_BLOCK).toInt())
-                png.decode(packed)
+                val dec = decodePng(packed)
+                when {
+                    dec == null -> png?.decode(packed) // PNG fora do comum: tenta o decodificador da plataforma
+                    dec.indices != null -> {
+                        // PNG indexado: vale a paleta da tabela do .sff; a do PNG é só reserva.
+                        val pal = v2Palette(src, paletteTable, paletteCount, lofs, own.paletteIndex) ?: dec.plte
+                        if (pal == null) null else applyPalette(dec.indices, dec.width, dec.height, pal)
+                    }
+                    else -> Portrait(dec.width, dec.height, dec.argb!!)
+                }
             }
             else -> null
         }
+        return result?.also { it.info = "SFF v2 · formato ${data.format}" }
     }
 
     private fun decodeRawV2(

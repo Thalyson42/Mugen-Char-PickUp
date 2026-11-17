@@ -24,6 +24,10 @@ Para publicar numa *Release*, crie uma tag `v0.1.0` (`git tag v0.1.0 && git push
 2. O app descobre sozinho qual `select.def` o jogo usa e o tamanho do grid (`rows` e `columns` do `system.def`). Se o grid ficar diferente do jogo, ajuste em **Menu → Tamanho do grid**.
 3. Use **Update char list** ou mexa no grid manualmente. Cada alteração é salva na hora no `select.def`.
 
+### Tamanho do grid
+
+**Menu → Tamanho do grid** grava `rows` e `columns` na seção `[Select Info]` do `system.def` do motif (por exemplo `data/ikemen1/system.def`), então o jogo passa a usar o mesmo tamanho. Só essas duas linhas são alteradas, e uma cópia fica em `system.def.bak` (feita antes da primeira alteração). Se o screenpack não tiver espaço para o novo tamanho, pode ser preciso ajustar `cell.size`/`pos` nele.
+
 ### Qual `select.def` é editado?
 
 A wiki do Ikemen GO avisa que **no Android não se deve editar `data/select.def` diretamente**: vale a cópia dentro da pasta do motif (por exemplo `data/ikemen1/select.def`). O app segue essa regra: lê o motif em `save/config.json`, abre o `system.def` dele e usa o `select` definido em `[Files]`, procurando primeiro na pasta do motif e depois em `data/`.

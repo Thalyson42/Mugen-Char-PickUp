@@ -28,7 +28,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -228,11 +227,11 @@ private fun CellTile(
     val entry = cell?.takeIf { it.kind == CellKind.CHAR || it.kind == CellKind.SLOT }?.entry
 
     // O retrato é carregado só quando a célula aparece na tela (a lista é preguiçosa).
-    val face by produceState<Face>(
-        initialValue = entry?.let(peekFace) ?: Face.Missing,
-        entry, faceEpoch,
-    ) {
-        if (entry != null && value !is Face.Image) value = loadFace(entry)
+    // O estado fica preso a (entry, faceEpoch): se a célula passar a mostrar outro personagem ele recomeça
+    // do zero. (Com produceState o retrato antigo ficava preso na célula.)
+    var face by remember(entry, faceEpoch) { mutableStateOf<Face>(entry?.let(peekFace) ?: Face.Missing) }
+    LaunchedEffect(entry, faceEpoch) {
+        if (entry != null && face !is Face.Image) face = loadFace(entry)
     }
 
     val bg = when {

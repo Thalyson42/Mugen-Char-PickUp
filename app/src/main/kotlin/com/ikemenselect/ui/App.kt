@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ikemenselect.Face
 import com.ikemenselect.MainViewModel
 import com.ikemenselect.core.isBlankCell
 
@@ -125,6 +126,8 @@ fun App(
                     BottomBar(
                         selected = s.selected,
                         label = s.selected?.let { s.cells.getOrNull(it) }?.label,
+                        info = s.selected?.let { s.cells.getOrNull(it)?.entry }
+                            ?.let { (vm.peekFace(it) as? Face.Image)?.info },
                         blank = s.selected?.let { s.cells.getOrNull(it).isBlankCell() } ?: true,
                         canUndo = s.canUndo,
                         loading = s.loading,
@@ -179,6 +182,7 @@ private fun Welcome(hasFolder: Boolean, loading: Boolean, error: String?, onPick
 private fun BottomBar(
     selected: Int?,
     label: String?,
+    info: String?,
     blank: Boolean,
     canUndo: Boolean,
     loading: Boolean,
@@ -192,9 +196,10 @@ private fun BottomBar(
             if (selected != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = if (blank) "Espaço ${selected + 1} (vazio)" else "Espaço ${selected + 1}: $label",
+                        text = if (blank) "Espaço ${selected + 1} (vazio)"
+                        else "Espaço ${selected + 1}: $label" + (info?.let { "\nretrato: $it" } ?: ""),
                         modifier = Modifier.weight(1f),
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (blank) {
@@ -230,7 +235,8 @@ private fun GridSizeDialog(rows: Int, columns: Int, onDismiss: () -> Unit, onCon
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Use os mesmos valores de rows e columns do system.def do seu screenpack.",
+                    "Grava rows e columns no system.def do jogo (cria um system.def.bak). " +
+                        "Se o screenpack não tiver espaço para o novo tamanho, ajuste cell.size/pos nele.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedTextField(r, { r = it.filter(Char::isDigit) }, label = { Text("Linhas (rows)") }, singleLine = true)

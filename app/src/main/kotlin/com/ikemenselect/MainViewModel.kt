@@ -18,6 +18,7 @@ import com.ikemenselect.core.PngDecoder
 import com.ikemenselect.core.Portrait
 import com.ikemenselect.core.SelectDef
 import com.ikemenselect.core.SffReader
+import com.ikemenselect.core.SystemDefEdit
 import com.ikemenselect.core.isBlankCell
 import com.ikemenselect.saf.SafTree
 import java.util.concurrent.ConcurrentHashMap
@@ -37,7 +38,7 @@ import kotlinx.coroutines.withContext
 sealed interface Face {
     object Loading : Face
     object Missing : Face
-    class Image(val bitmap: ImageBitmap) : Face
+    class Image(val bitmap: ImageBitmap, val info: String = "") : Face
 }
 
 /** PNG dentro de .sff (SFF v2, formatos 10/11/12) decodificado pelo Android. */
@@ -79,6 +80,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val charsUri: Uri,
         val rows: Int,
         val columns: Int,
+        val systemPath: String?,
     )
 
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -128,8 +130,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val sffNode = l.tree.resolveNode(sffPath, cached = true)?.takeIf { !it.isDir } ?: return Face.Missing
             val portrait = l.tree.openSource(sffNode.id)?.use { SffReader.readPortrait(it, AndroidPng) }
                 ?: return Face.Missing
-            val bmp = Bitmap.createBitmap(portrait.argb, portrait.width, portrait.height, Bitmap.Config.ARGB_8888)
-            Face.Image(bmp.asImageBitmap())
+            var bmp = Bitmap.createBitmap(portrait.argb, portrait.width, portrait.height, Bitmap.Config.ARGB_8888)
+            val big = maxOf(bmp.width, bmp.height)
+            if (big > 192) { // retratos enormes: reduz para não gastar memória
+                val k = 192f / big
+                bmp = Bitmap.createScaledBitmap(
+                    bmp, maxOf(1, (bmp.width * k).toInt()), maxOf(1, (bmp.height * k).toInt()), true,
+                )
+            }
+            Face.Image(bmp.asImageBitmap(), portrait.info)
         } catch (e: Exception) {
             Face.Missing
         } catch (e: OutOfMemoryError) {
@@ -163,6 +172,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 loaded = l
                 faces.clear()
                 backupDone = false
+                systemBackupDone = false
                 undoStack.clear()
                 val cells = GridOps.normalize(l.def.cells, l.rows, l.columns)
                 def = l.def.withCells(cells)
@@ -203,9 +213,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!parsed.hasCharactersSection) error("O select.def não tem a seção [Characters].")
         val chars = tree.resolveNode("chars") ?: error("Pasta chars não encontrada.")
 
-        val rows = prefs.getInt(KEY_ROWS, 0).takeIf { it > 0 } ?: located.rows?.takeIf { it > 0 } ?: 10
-        val cols = prefs.getInt(KEY_COLS, 0).takeIf { it > 0 } ?: located.columns?.takeIf { it > 0 } ?: 8
-        return Loaded(tree, located.selectPath, selectNode.id, text, parsed, chars.name, tree.docUri(chars.id), rows, cols)
+        // O que vale é o system.def do jogo; o valor guardado no app só entra se não houver system.def.
+        val rows = located.rows?.takeIf { it > 0 } ?: prefs.getInt(KEY_ROWS, 0).takeIf { it > 0 } ?: 10
+        val cols = located.columns?.takeIf { it > 0 } ?: prefs.getInt(KEY_COLS, 0).takeIf { it > 0 } ?: 8
+        return Loaded(
+            tree, located.selectPath, selectNode.id, text, parsed, chars.name, tree.docUri(chars.id),
+            rows, cols, located.systemDefPath,
+        )
     }
 
     // ---------- interação com o grid ----------
@@ -297,6 +311,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cells = GridOps.normalize(_state.value.cells, rows, columns)
         def = def?.withCells(cells)
         _state.update { it.copy(rows = rows, columns = columns, cells = cells, selected = null) }
+        saveGridSizeToSystemDef(rows, columns)
+    }
+
+    private var systemBackupDone = false
+
+    /** Grava rows/columns na seção [Select Info] do system.def do motif, para o jogo usar o mesmo tamanho. */
+    private fun saveGridSizeToSystemDef(rows: Int, columns: Int) {
+        val l = loaded ?: return
+        val path = l.systemPath
+        if (path == null) {
+            say("Grid alterado só no app: não achei o system.def do jogo.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            ioLock.withLock {
+                try {
+                    val node = l.tree.resolveNode(path) ?: error("system.def não encontrado")
+                    val old = l.tree.readNode(node.id) ?: error("não foi possível ler o system.def")
+                    val updated = SystemDefEdit.setGridSize(old, rows, columns)
+                    if (updated != old) {
+                        if (!systemBackupDone) {
+                            backupFile(l.tree, path, old)
+                            systemBackupDone = true
+                        }
+                        l.tree.writeNode(node.id, updated)
+                    }
+                    say("Grid ${rows}×${columns} gravado em $path")
+                } catch (e: Exception) {
+                    _state.update { it.copy(error = "Falha ao gravar o system.def: ${e.message}") }
+                }
+            }
+        }
+    }
+
+    /** Guarda uma cópia (arquivo.bak) ao lado do original antes da primeira alteração da sessão. */
+    private fun backupFile(tree: SafTree, path: String, content: String) {
+        val dir = tree.resolveNode(path.substringBeforeLast('/', "")) ?: return
+        val name = path.substringAfterLast('/') + ".bak"
+        val id = tree.children(dir.id).firstOrNull { it.name.equals(name, true) }?.id
+            ?: tree.createFile(dir.id, name)?.id
+            ?: return
+        tree.writeNode(id, content)
     }
 
     fun clearMessage() = _state.update { it.copy(message = null) }

@@ -296,7 +296,27 @@ class SffTests {
         }
         val p = SffReader.readPortrait(ByteArraySource(file), decoder)!!
         assertEquals(listOf(0xFF123456.toInt(), 0x80ABCDEF.toInt()), p.argb.toList())
-        assertNull(SffReader.readPortrait(ByteArraySource(file), null)) // sem decodificador de PNG
+        // o core decodifica PNG sozinho, sem depender da plataforma
+        assertEquals(p.argb.toList(), SffReader.readPortrait(ByteArraySource(file))!!.argb.toList())
+    }
+
+    @Test
+    fun v2IndexedPngUsesTheSffPaletteNotThePngOne() {
+        // PNG de 2 bits com paleta interna "errada" de propósito (cinzas): vale a paleta do .sff.
+        val gray = byteArrayOf(0, 60, 120, -1)
+        val icm = java.awt.image.IndexColorModel(2, 4, gray, gray, gray)
+        val img = BufferedImage(4, 1, BufferedImage.TYPE_BYTE_BINARY, icm)
+        val idx = intArrayOf(1, 2, 3, 0)
+        for (x in 0..3) img.raster.setSample(x, 0, 0, idx[x])
+        val png = ByteArrayOutputStream().also { ImageIO.write(img, "png", it) }.toByteArray()
+        val data = Out().also { it.u32(0); it.bytes(png) }.toByteArray()
+        val pal = palette256(40)
+        val file = buildV2(listOf(pal), listOf(V2S(9000, 0, 4, 1, 10, 8, data)))
+
+        val p = SffReader.readPortrait(ByteArraySource(file))!!
+        assertEquals(listOf(pal[1], pal[2], pal[3]), p.argb.toList().take(3))
+        assertEquals(0, p.argb[3] ushr 24) // índice 0 = transparente
+        assertEquals("SFF v2 · formato 10", p.info)
     }
 
     @Test
