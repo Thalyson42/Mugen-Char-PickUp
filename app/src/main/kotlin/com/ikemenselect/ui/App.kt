@@ -1,5 +1,6 @@
 package com.ikemenselect.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -34,9 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ikemenselect.Face
 import com.ikemenselect.MainViewModel
 import com.ikemenselect.core.isBlankCell
+import com.ikemenselect.viewer.ViewerViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,9 +50,15 @@ fun App(
     onPickDef: (Int) -> Unit,
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
+    val viewer: ViewerViewModel = viewModel()
     val snackbar = remember { SnackbarHostState() }
     var menuOpen by remember { mutableStateOf(false) }
     var sizeDialog by remember { mutableStateOf(false) }
+    // "home" = escolher o que fazer, "select" = Character Selection, "view" = Character View
+    var screen by rememberSaveable { mutableStateOf("home") }
+
+    BackHandler(enabled = s.ready && screen != "home") { screen = "home" }
+    LaunchedEffect(s.ready, s.loading) { if (!s.ready && !s.loading) screen = "home" }
 
     LaunchedEffect(s.message) {
         s.message?.let {
@@ -72,14 +82,22 @@ fun App(
                                     text = { Text("Trocar pasta do Ikemen GO") },
                                     onClick = { menuOpen = false; onPickFolder() },
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Tamanho do grid (${s.rows}×${s.columns})") },
-                                    onClick = { menuOpen = false; sizeDialog = true },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Recarregar select.def") },
-                                    onClick = { menuOpen = false; vm.reload() },
-                                )
+                                if (s.ready && screen != "home") {
+                                    DropdownMenuItem(
+                                        text = { Text("Voltar ao início") },
+                                        onClick = { menuOpen = false; screen = "home" },
+                                    )
+                                }
+                                if (screen == "select") {
+                                    DropdownMenuItem(
+                                        text = { Text("Tamanho do grid (${s.rows}×${s.columns})") },
+                                        onClick = { menuOpen = false; sizeDialog = true },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Recarregar select.def") },
+                                        onClick = { menuOpen = false; vm.reload() },
+                                    )
+                                }
                             }
                         }
                     }
@@ -95,6 +113,15 @@ fun App(
                     error = s.error,
                     onPickFolder = onPickFolder,
                 )
+            } else if (screen == "home") {
+                HomeScreen(
+                    folderName = s.folderName,
+                    onSelection = { screen = "select" },
+                    onView = { screen = "view" },
+                )
+            } else if (screen == "view") {
+                val source = remember { vm.viewerSource() }
+                CharacterView(viewer = viewer, source = source)
             } else {
                 Column(Modifier.fillMaxSize()) {
                     Text(

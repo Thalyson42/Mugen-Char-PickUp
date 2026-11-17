@@ -38,7 +38,7 @@ class SffTests {
     private class V2S(
         val group: Int, val number: Int, val w: Int, val h: Int,
         val fmt: Int, val depth: Int, val data: ByteArray,
-        val pal: Int = 0, val link: Int = 0,
+        val pal: Int = 0, val link: Int = 0, val ax: Int = 0, val ay: Int = 0,
     )
 
     /** palettes: cada uma é uma lista de cores RGB (índice 0 incluído). */
@@ -67,7 +67,7 @@ class SffTests {
         out.pad(tableOfs)
         for ((i, s) in sprites.withIndex()) {
             out.u16(s.group); out.u16(s.number); out.u16(s.w); out.u16(s.h)
-            out.u16(0); out.u16(0)
+            out.u16(s.ax); out.u16(s.ay)
             out.u16(s.link); out.u8(s.fmt); out.u8(s.depth)
             out.u32(sprOfs[i].toLong()); out.u32(s.data.size.toLong())
             out.u16(s.pal); out.u16(0)
@@ -100,7 +100,10 @@ class SffTests {
 
     // ------------------------------------------------------------ SFF v1 builder
 
-    private class V1S(val group: Int, val number: Int, val pcx: ByteArray, val link: Int = 0, val palSame: Boolean = false)
+    private class V1S(
+        val group: Int, val number: Int, val pcx: ByteArray, val link: Int = 0, val palSame: Boolean = false,
+        val ax: Int = 0, val ay: Int = 0,
+    )
 
     private fun buildV1(sprites: List<V1S>): ByteArray {
         val out = Out()
@@ -112,7 +115,7 @@ class SffTests {
         for ((i, s) in sprites.withIndex()) {
             val next = if (i == sprites.size - 1) 0L else ofs + 32 + s.pcx.size
             out.u32(next); out.u32(s.pcx.size.toLong())
-            out.u16(0); out.u16(0)
+            out.u16(s.ax); out.u16(s.ay)
             out.u16(s.group); out.u16(s.number); out.u16(s.link)
             out.u8(if (s.palSame) 1 else 0)
             out.pad((ofs + 32).toInt())
@@ -327,6 +330,59 @@ class SffTests {
     }
 
     // ------------------------------------------------------------ CharFiles
+
+    // ------------------------------------------------------------ SffFile (aberto uma vez)
+
+    @Test
+    fun sffFileV2ListsSpritesWithAxisAndDecodesAny() {
+        val file = buildV2(
+            listOf(pal4, pal4b),
+            listOf(
+                V2S(0, 0, 2, 1, 0, 8, byteArrayOf(1, 2), ax = 10, ay = -20),
+                V2S(200, 3, 2, 1, 0, 8, byteArrayOf(3, 1), pal = 1, ax = -5, ay = 7),
+                V2S(9000, 0, 0, 0, 1, 0, ByteArray(0), pal = 1, link = 0),
+            ),
+        )
+        val sff = SffReader.open(ByteArraySource(file))!!
+        assertEquals(2, sff.version)
+        assertEquals(3, sff.sprites.size)
+        val i = sff.info(200, 3)!!
+        assertEquals(-5, i.axisX)
+        assertEquals(7, i.axisY)
+        assertEquals(listOf(pal4b[3], pal4b[1]), sff.decode(200, 3)!!.argb.toList())
+        assertEquals(listOf(pal4[1], pal4[2]), sff.decode(0, 0)!!.argb.toList())
+        // linked usa os dados do sprite 0, mas a própria paleta
+        assertEquals(listOf(pal4b[1], pal4b[2]), sff.decode(9000, 0)!!.argb.toList())
+        assertNull(sff.decode(1, 1))
+        assertTrue(sff.has(200, 3))
+    }
+
+    @Test
+    fun sffFileV1ListsSpritesWithAxisAndDecodesAny() {
+        val p0 = palette256(0)
+        val p1 = palette256(50)
+        val file = buildV1(
+            listOf(
+                V1S(0, 0, pcx(2, 2, intArrayOf(1, 1, 1, 1), p0), ax = 30, ay = 60),
+                V1S(200, 0, pcx(4, 1, intArrayOf(0, 1, 2, 3), p1), ax = -3, ay = -4),
+            ),
+        )
+        val sff = SffReader.open(ByteArraySource(file))!!
+        assertEquals(1, sff.version)
+        assertEquals(2, sff.sprites.size)
+        assertEquals(30, sff.info(0, 0)!!.axisX)
+        assertEquals(-4, sff.info(200, 0)!!.axisY)
+        val d = sff.decode(200, 0)!!
+        assertEquals(4, d.width)
+        assertEquals(p1[3], d.argb[3])
+        assertEquals(2, sff.decode(0, 0)!!.width)
+    }
+
+    @Test
+    fun sffFileBrokenFileGivesNull() {
+        assertNull(SffReader.open(ByteArraySource(ByteArray(10))))
+        assertNull(SffReader.open(ByteArraySource("NotAnSffFileAtAllNotAnSffFileAtAll".toByteArray())))
+    }
 
     @Test
     fun charFilesDefPath() {

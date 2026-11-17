@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ikemenselect.core.Candidate
 import com.ikemenselect.core.Cell
+import com.ikemenselect.core.CellKind
 import com.ikemenselect.core.CharFiles
 import com.ikemenselect.core.GridOps
 import com.ikemenselect.core.Locator
@@ -21,6 +22,8 @@ import com.ikemenselect.core.SffReader
 import com.ikemenselect.core.SystemDefEdit
 import com.ikemenselect.core.isBlankCell
 import com.ikemenselect.saf.SafTree
+import com.ikemenselect.viewer.CharOption
+import com.ikemenselect.viewer.ViewerSource
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,7 +45,7 @@ sealed interface Face {
 }
 
 /** PNG dentro de .sff (SFF v2, formatos 10/11/12) decodificado pelo Android. */
-private val AndroidPng = PngDecoder { bytes ->
+internal val AndroidPng = PngDecoder { bytes ->
     val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@PngDecoder null
     val px = IntArray(bmp.width * bmp.height)
     bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
@@ -101,6 +104,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun charsFolderUri(): Uri? = loaded?.charsUri
+
+    /** O que o Character View precisa: a pasta aberta e os personagens do select.def (na ordem do grid). */
+    fun viewerSource(): ViewerSource? {
+        val l = loaded ?: return null
+        val chars = _state.value.cells
+            .filterNotNull()
+            .filter { (it.kind == CellKind.CHAR || it.kind == CellKind.SLOT) && it.entry != null }
+            .map { CharOption(it.entry!!, it.label.ifEmpty { it.entry!! }) }
+            .distinctBy { it.entry.lowercase() }
+        return ViewerSource(l.tree, l.charsName, chars)
+    }
 
     // ---------- retratos ----------
 
