@@ -59,6 +59,25 @@ object SffReader {
     /** Retrato de seleção de personagem: sprite 9000,0. */
     fun readPortrait(src: RandomAccessSource, png: PngDecoder? = null): Portrait? = readSprite(src, 9000, 0, png)
 
+    /**
+     * Retrato para a célula do grid: 9000,0 sem as bordas transparentes (alguns personagens usam um quadro
+     * grande onde só o rosto é opaco; o jogo posiciona pelo eixo, o app recorta).
+     * Se o 9000,0 não tiver formato de retrato (muito estreito ou alto), tenta 9000,100 e 9000,1.
+     * Se nenhum servir, devolve o 9000,0 mesmo assim.
+     */
+    fun readSelectPortrait(src: RandomAccessSource, png: PngDecoder? = null): Portrait? {
+        val first = readSprite(src, 9000, 0, png)?.trimmed()
+        if (first != null && first.looksLikePortrait()) return first
+        for (n in intArrayOf(100, 1)) {
+            val c = readSprite(src, 9000, n, png)?.trimmed() ?: continue
+            if (c.looksLikePortrait()) {
+                c.info = c.info + " · sprite 9000,$n"
+                return c
+            }
+        }
+        return first
+    }
+
     fun readSprite(src: RandomAccessSource, group: Int, number: Int, png: PngDecoder? = null): Portrait? =
         try {
             val h = src.read(0, 80)
@@ -536,3 +555,28 @@ internal fun lz5Decode(rle: ByteArray, size: Int): ByteArray? {
     }
     return p
 }
+
+/** Recorta as bordas totalmente transparentes. Devolve o próprio retrato se não houver o que recortar. */
+fun Portrait.trimmed(): Portrait {
+    var x0 = width
+    var y0 = height
+    var x1 = -1
+    var y1 = -1
+    for (y in 0 until height) {
+        for (x in 0 until width) {
+            if ((argb[y * width + x] ushr 24) == 0) continue
+            if (x < x0) x0 = x
+            if (x > x1) x1 = x
+            if (y < y0) y0 = y
+            if (y > y1) y1 = y
+        }
+    }
+    if (x1 < 0 || (x0 == 0 && y0 == 0 && x1 == width - 1 && y1 == height - 1)) return this
+    val w = x1 - x0 + 1
+    val h = y1 - y0 + 1
+    return Portrait(w, h, IntArray(w * h) { argb[(y0 + it / w) * width + x0 + it % w] }, info)
+}
+
+/** Tem proporção de rosto (nem muito estreito nem muito alto) e tamanho mínimo. */
+private fun Portrait.looksLikePortrait(): Boolean =
+    width >= 8 && height >= 8 && width * 5 >= height * 3 && height * 5 >= width * 3

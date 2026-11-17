@@ -25,7 +25,7 @@ android {
         targetSdk = 34
         // No GitHub o número da execução sempre cresce, então cada build novo vale como atualização.
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 2
-        versionName = "0.2.0"
+        versionName = "0.2.1"
     }
 
     buildTypes {

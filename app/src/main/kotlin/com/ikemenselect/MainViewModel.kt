@@ -128,7 +128,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val sprite = CharFiles.spriteFile(defText) ?: return Face.Missing
             val sffPath = defPath.substringBeforeLast('/') + "/" + sprite
             val sffNode = l.tree.resolveNode(sffPath, cached = true)?.takeIf { !it.isDir } ?: return Face.Missing
-            val portrait = l.tree.openSource(sffNode.id)?.use { SffReader.readPortrait(it, AndroidPng) }
+            val portrait = l.tree.openSource(sffNode.id)?.use { SffReader.readSelectPortrait(it, AndroidPng) }
                 ?: return Face.Missing
             var bmp = Bitmap.createBitmap(portrait.argb, portrait.width, portrait.height, Bitmap.Config.ARGB_8888)
             val big = maxOf(bmp.width, bmp.height)

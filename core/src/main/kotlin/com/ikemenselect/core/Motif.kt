@@ -7,6 +7,9 @@ data class MotifInfo(val rows: Int?, val columns: Int?, val selectFile: String?)
 interface ReadOnlyFs {
     fun exists(path: String): Boolean
     fun readText(path: String): String?
+
+    /** Nomes das subpastas de [path] (usado para achar screenpacks desconhecidos em data/). */
+    fun listDirs(path: String): List<String> = emptyList()
 }
 
 data class Located(val selectPath: String, val systemDefPath: String?, val rows: Int?, val columns: Int?)
@@ -40,15 +43,31 @@ fun parseSystemDef(text: String): MotifInfo {
 fun motifFromConfig(json: String): String? =
     Regex("\"motif\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE).find(json)?.groupValues?.get(1)
 
+/** Lê `Motif = data/ikemen1/system.def` de um config.ini (Ikemen GO antigo) ou do data/mugen.cfg (M.U.G.E.N). */
+fun motifFromIni(ini: String): String? =
+    Regex("""^\s*motif\s*=\s*([^;\r\n]+)""", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
+        .find(ini)?.groupValues?.get(1)?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }
+
 object Locator {
+    /** Lugares onde procurar o system.def do motif, do mais para o menos provável. */
+    fun systemDefCandidates(fs: ReadOnlyFs): List<String> {
+        val out = ArrayList<String>()
+        fs.readText("save/config.json")?.let { motifFromConfig(it) }?.let { out += it }
+        fs.readText("save/config.ini")?.let { motifFromIni(it) }?.let { out += it }
+        fs.readText("data/mugen.cfg")?.let { motifFromIni(it) }?.let { out += it }
+        out += "data/ikemen1/system.def" // motif padrão do Ikemen GO
+        out += "data/system.def" // M.U.G.E.N e motifs antigos
+        for (dir in fs.listDirs("data").sortedBy { it.lowercase() }) out += "data/$dir/system.def" // outros screenpacks
+        return out.map { it.replace('\\', '/').trim().trimStart('/') }.filter { it.isNotEmpty() }.distinct()
+    }
+
     /**
      * Descobre qual select.def o Ikemen GO realmente usa.
      * Segundo a wiki do Ikemen GO, no Android a cópia dentro da pasta do motif
      * (ex.: data/ikemen1/select.def) é a que vale; por isso ela tem prioridade.
      */
     fun locate(fs: ReadOnlyFs): Located? {
-        val motif = fs.readText("save/config.json")?.let { motifFromConfig(it) }?.replace('\\', '/')
-        val systemPath = listOfNotNull(motif, "data/system.def").firstOrNull { fs.exists(it) }
+        val systemPath = systemDefCandidates(fs).firstOrNull { fs.exists(it) }
         val info = systemPath?.let { fs.readText(it) }?.let { parseSystemDef(it) }
         val motifDir = systemPath?.substringBeforeLast('/', "") ?: "data"
         val selectName = (info?.selectFile ?: "select.def").replace('\\', '/')
