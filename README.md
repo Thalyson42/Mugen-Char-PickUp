@@ -1,4 +1,4 @@
-# Ikemen Select Manager
+# Mugen Char PickUp
 
 App Android para gerenciar a seleção de personagens do **Ikemen GO** (e M.U.G.E.N) sem editar o `select.def` na mão.
 
@@ -13,10 +13,17 @@ App Android para gerenciar a seleção de personagens do **Ikemen GO** (e M.U.G.
 
 1. Crie um repositório no GitHub e envie este projeto.
 2. Abra a aba **Actions**: o workflow *Build APK* roda sozinho a cada push (ou clique em *Run workflow*).
-3. Quando terminar, baixe o artefato **IkemenSelectManager-debug** (é um .zip com o `.apk` dentro).
+3. Quando terminar, baixe o artefato **Mugen-Char-PickUp-apk** (é um .zip com o `.apk` dentro).
 4. No celular, instale o APK (permita "instalar apps desconhecidos" para o app que você usou para abrir o arquivo).
 
-Para publicar numa *Release*, crie uma tag `v0.1.0` (`git tag v0.1.0 && git push --tags`): o APK é anexado automaticamente.
+Para publicar numa *Release*, crie uma tag `v0.2.0` (`git tag v0.2.0 && git push --tags`): o APK é anexado automaticamente.
+
+## Atualizar o app por cima de uma versão antiga
+
+Basta instalar o APK novo (da aba **Releases** ou do artefato do **Actions**): o Android mantém o app e as configurações. Isso funciona porque todo APK do projeto usa a mesma assinatura (`app/pickup.keystore`), o mesmo `applicationId` e um `versionCode` que sempre cresce (vem do número da execução no GitHub).
+
+- **Uma vez só:** APKs anteriores à versão 0.2.0 foram assinados com chaves diferentes (a de debug muda a cada build). Desinstale a versão antiga uma vez antes de instalar a 0.2.0. Você não perde nada importante: o `select.def` e os personagens ficam na pasta do jogo, só o app pede a pasta de novo.
+- A chave está no repositório de propósito, para qualquer pessoa conseguir compilar um APK que atualize o app. A consequência é que ela **não protege** contra um APK falso com a mesma assinatura. Para uso pessoal tudo bem; se um dia publicar o app para outras pessoas, gere uma chave privada e guarde-a nos *Secrets* do GitHub.
 
 ## Como usar
 

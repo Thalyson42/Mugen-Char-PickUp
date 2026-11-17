@@ -26,17 +26,24 @@ jobs:
       - name: Testes do core
         run: ./gradlew :core:test --no-daemon
 
-      - name: Compilar APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Compilar APK (release, assinado com a chave fixa do projeto)
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Nomear o APK
+        run: cp app/build/outputs/apk/release/app-release.apk Mugen-Char-PickUp.apk
 
       - name: Guardar APK como artefato
         uses: actions/upload-artifact@v4
         with:
-          name: IkemenSelectManager-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: Mugen-Char-PickUp-apk
+          path: Mugen-Char-PickUp.apk
 
-      - name: Publicar APK na Release (só em tags v*)
+      - name: Publicar na Release (só em tags v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/debug/*.apk
+          name: Mugen Char PickUp ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            Baixe o `Mugen-Char-PickUp.apk` e instale. Para atualizar, instale o APK novo por cima do antigo.
+          files: Mugen-Char-PickUp.apk

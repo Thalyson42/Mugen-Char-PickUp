@@ -62,7 +62,7 @@ fun App(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("Ikemen Select Manager") },
+                title = { Text("Mugen Char PickUp") },
                 actions = {
                     if (s.hasFolder) {
                         Box {

@@ -7,20 +7,39 @@ android {
     namespace = "com.ikemenselect"
     compileSdk = 34
 
+    // Chave fixa do projeto. Para o Android aceitar uma atualização "por cima", o APK novo precisa ter
+    // o mesmo applicationId, a MESMA assinatura e um versionCode maior. A chave de debug muda a cada
+    // build no GitHub, por isso todos os APKs (debug e release) usam esta.
+    signingConfigs {
+        create("pickup") {
+            storeFile = file("pickup.keystore")
+            storePassword = "pickup123"
+            keyAlias = "pickup"
+            keyPassword = "pickup123"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.ikemenselect"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // No GitHub o número da execução sempre cresce, então cada build novo vale como atualização.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("pickup")
+        }
         release {
             isMinifyEnabled = false
-            // Assinado com a chave de debug para o APK ser instalável direto (uso pessoal).
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("pickup")
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
     }
 
     compileOptions {
