@@ -36,6 +36,9 @@ class Animation(val id: Int, val frames: List<Frame>, val loopStart: Int) {
         }
     }
 
+    /** Tick (desde o início da animação) em que o frame [i] começa. */
+    fun frameStart(i: Int): Int = starts.getOrElse(i) { 0 }
+
     /** Duração total em ticks, sem contar a imagem infinita do fim. */
     val totalTicks: Int = lengths.sum()
 

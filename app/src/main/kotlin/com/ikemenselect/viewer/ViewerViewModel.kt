@@ -12,6 +12,10 @@ import com.ikemenselect.core.AirParser
 import com.ikemenselect.core.CharDef
 import com.ikemenselect.core.CharFiles
 import com.ikemenselect.core.CharSize
+import com.ikemenselect.core.MovePlan
+import com.ikemenselect.core.MovePlanner
+import com.ikemenselect.core.PlanOptions
+import com.ikemenselect.core.StateBook
 import com.ikemenselect.core.SffFile
 import com.ikemenselect.core.SffReader
 import com.ikemenselect.core.SpriteInfo
@@ -43,7 +47,13 @@ class LoadedChar(
     val size: CharSize,
     val anims: Map<Int, Animation>,
     val sff: SffFile?,
-)
+    /** Pasta do personagem (relativa à raiz) e arquivos do [Files] do .def, para ler os estados depois. */
+    val dir: String,
+    val files: Map<String, String>,
+) {
+    /** Estados e comandos; null enquanto estão sendo lidos. */
+    @Volatile var book: StateBook? = null
+}
 
 class LoadedStage(
     val option: StageOption,
@@ -141,6 +151,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
                     val n = if (owner == Owner.P1) it.copy(p1 = loaded) else it.copy(p2 = loaded)
                     n.copy(busy = false, version = it.version + 1)
                 }
+                loadBook(loaded)
                 // já deixa pronta a animação parada (0), que é a que aparece primeiro
                 loaded.anims[0]?.let { ensureAnim(owner, loaded, it) }
                 _ui.update { it.copy(version = it.version + 1) }
@@ -196,6 +207,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         val size = file(def.cns)?.let { tree.readNode(it.id) }?.let { CharSize.parse(it) } ?: CharSize.DEFAULT
         return LoadedChar(
             option, def.name.ifEmpty { option.label }, def.localCoordX, def.localCoordY, size, anims, sff,
+            dir, def.files,
         )
     }
 
@@ -213,6 +225,47 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         return LoadedStage(option, def, sff)
     }
 
+    // ---------------------------------------------------------------- estados e golpes
+
+    /** Lê os arquivos de estado do personagem em segundo plano; quando termina a tela é avisada. */
+    private fun loadBook(c: LoadedChar) {
+        val src = source ?: return
+        viewModelScope.launch {
+            val book = withContext(Dispatchers.IO) {
+                try {
+                    readBook(src.tree, c)
+                } catch (e: Exception) {
+                    StateBook.EMPTY
+                }
+            }
+            c.book = book
+            _ui.update { it.copy(version = it.version + 1) }
+        }
+    }
+
+    /** Ordem do jogo: stcommon, cmd, cns, st, st1..st9 (o último arquivo vence). */
+    private fun readBook(tree: SafTree, c: LoadedChar): StateBook {
+        val names = ArrayList<String>()
+        c.files["stcommon"]?.let { names.add(it) }
+        c.files["cmd"]?.let { names.add(it) }
+        c.files["cns"]?.let { names.add(it) }
+        for (k in listOf("st") + (1..9).map { "st$it" }) c.files[k]?.let { names.add(it) }
+        val texts = ArrayList<String>()
+        for (name in names.distinct()) {
+            val node = tree.resolveNode("${c.dir}/$name", cached = true)
+                ?: tree.resolveNode("data/$name", cached = true)
+            if (node != null && !node.isDir) tree.readNode(node.id)?.let { texts.add(it) }
+        }
+        return StateBook.parse(texts)
+    }
+
+    /** Planeja o golpe do estado [stateNo] de [c]. [assumeHit]: supõe que acertou (há um adversário). */
+    suspend fun planMove(c: LoadedChar, stateNo: Int, assumeHit: Boolean): MovePlan? =
+        withContext(Dispatchers.Default) {
+            val book = c.book ?: return@withContext null
+            MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit))
+        }
+
     // ---------------------------------------------------------------- sprites
 
     /** Sprite já decodificado (sem I/O) ou null se ainda não carregou / não existe. */
@@ -224,6 +277,15 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         val wanted = anim.frames.map { it.group to it.image }.distinct()
         decodeAll(owner, sff, wanted)
         // a animação parada (0) fica sempre guardada: é para ela que o personagem volta depois de cada golpe
+        val idle = c.anims[0]?.frames?.map { it.group to it.image }.orEmpty()
+        trim(owner, wanted + idle)
+    }
+
+    /** Decodifica os sprites de várias animações de uma vez e só depois limpa o que não é usado. */
+    suspend fun ensureAnims(owner: Int, c: LoadedChar, list: Collection<Animation>) {
+        val sff = c.sff ?: return
+        val wanted = list.flatMap { a -> a.frames.map { it.group to it.image } }.distinct()
+        decodeAll(owner, sff, wanted)
         val idle = c.anims[0]?.frames?.map { it.group to it.image }.orEmpty()
         trim(owner, wanted + idle)
     }

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -52,6 +53,10 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ikemenselect.core.AnimNames
+import com.ikemenselect.core.AnimStep
+import com.ikemenselect.core.Animation
+import com.ikemenselect.core.Bind
+import com.ikemenselect.core.StateBook
 import com.ikemenselect.core.Blend
 import com.ikemenselect.core.Placement
 import com.ikemenselect.core.RectF
@@ -69,8 +74,85 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
-/** Animação em andamento de um personagem: qual, desde quando (em ticks do relógio) e se repete. */
-private class Play(val anim: Int, val start: Float, val loop: Boolean)
+/**
+ * O que um personagem está fazendo: uma sequência de trechos de animação (um golpe inteiro ou uma animação só).
+ * Depois de acabar, volta para a animação parada. [delay]: ticks de espera até começar (usado pelo alvo de um golpe).
+ */
+private class Play(
+    val steps: List<AnimStep>,
+    val start: Float,
+    val delay: Int = 0,
+    val repeat: Boolean = false,
+    /** Duração de uma volta, quando [repeat]. */
+    val period: Int = 0,
+    /** Dono dos trechos com useOwner (animações do atacante, desenhadas no alvo). */
+    val ownerChar: LoadedChar? = null,
+    val ownerId: Int = 0,
+    /** Para o alvo de um golpe: quem ataca (a posição dos [binds] é relativa a ele). */
+    val attacker: Int = 0,
+    val binds: List<Bind> = emptyList(),
+    val bindEnd: Float = 0f,
+)
+
+private val IdlePlay = Play(emptyList(), 0f)
+
+/** Animação a desenhar agora e de quem são os sprites e a escala. */
+private class Shown(val anim: Animation, val tick: Int, val loop: Boolean, val spriteOwner: Int, val c: LoadedChar)
+
+private fun naturalLen(a: Animation): Int = a.totalTicks + if (a.infinite) 30 else 0
+
+private fun playTime(play: Play, clock: Float): Int {
+    var t = (clock - play.start).toInt()
+    if (play.repeat && play.period > 0 && t >= 0) t %= play.period
+    return t
+}
+
+private fun resolve(c: LoadedChar, id: Int, play: Play, clock: Float): Shown? {
+    val idle = c.anims[0] ?: c.anims.values.firstOrNull() ?: return null
+    val t = playTime(play, clock) - play.delay
+    if (t < 0 || play.steps.isEmpty()) return Shown(idle, clock.toInt(), true, id, c)
+    var acc = t
+    for (s in play.steps) {
+        val useOwner = s.useOwner && play.ownerChar != null
+        val ch = if (useOwner) play.ownerChar!! else c
+        val a = ch.anims[s.anim] ?: continue
+        val dur = if (s.ticks >= 0) s.ticks else naturalLen(a)
+        if (acc < dur) return Shown(a, acc, false, if (useOwner) play.ownerId else id, ch)
+        acc -= dur
+    }
+    return Shown(idle, acc, true, id, c) // terminou: volta ao parado
+}
+
+/** Posição do alvo preso ao atacante (TargetBind), ou null se não está preso agora. */
+private fun boundPos(
+    play: Play, clock: Float, atk: LoadedChar?, atkX: Float, atkFacing: Int, ground: Float, stW: Int, stH: Int,
+): Pair<Float, Float>? {
+    if (play.binds.isEmpty() || atk == null || clock >= play.bindEnd) return null
+    val t = playTime(play, clock)
+    var cur: Bind? = null
+    for (b in play.binds) if (b.start <= t) cur = b else break
+    if (cur == null) return null
+    val sx = Placement.charScale(stW, atk.localCoordX, atk.size.xscale)
+    val sy = Placement.charScale(stH, atk.localCoordY, atk.size.yscale)
+    return (atkX + atkFacing * cur.dx * sx) to (ground + cur.dy * sy)
+}
+
+private class BtnItem(val id: Int, val label: String, val group: String)
+
+private fun buildMoves(c: LoadedChar, book: StateBook): List<BtnItem> =
+    book.states.values
+        .filter { it.no >= 0 && it.anim != null && c.anims.containsKey(it.anim!!) }
+        .sortedBy { it.no }
+        .map { st ->
+            val cmds = book.commandsByState[st.no].orEmpty().take(2).joinToString("/")
+            val label = listOfNotNull(cmds.ifEmpty { null }, "${st.no}", AnimNames.exact(st.no)).joinToString(" · ")
+            BtnItem(st.no, label, AnimNames.group(st.no))
+        }
+
+private fun buildAnims(c: LoadedChar): List<BtnItem> =
+    c.anims.keys.sorted().map { id ->
+        BtnItem(id, AnimNames.exact(id)?.let { "$id · $it" } ?: "$id", AnimNames.group(id))
+    }
 
 private val GroupOrder = listOf("Movimento", "Normais", "Especiais", "Supers", "Outros", "Reações", "Outras")
 private val CollapsedByDefault = setOf("Reações", "Outras")
@@ -88,8 +170,10 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
     var active by remember { mutableIntStateOf(Owner.P1) }
     // relógio em ticks (60 por segundo). Só é lido na hora de desenhar, para não recompor a tela a cada quadro.
     var clock by remember { mutableFloatStateOf(0f) }
-    var play1 by remember { mutableStateOf(Play(0, 0f, true)) }
-    var play2 by remember { mutableStateOf(Play(0, 0f, true)) }
+    var play1 by remember { mutableStateOf(IdlePlay) }
+    var play2 by remember { mutableStateOf(IdlePlay) }
+    var listMode by remember { mutableIntStateOf(0) } // 0 = golpes (estados), 1 = animações
+    var note by remember { mutableStateOf<String?>(null) }
     var picker by remember { mutableIntStateOf(0) } // 0 = fechado, 1 = P1, 2 = P2, 3 = cenário
     val scope = rememberCoroutineScope()
 
@@ -102,8 +186,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             last = now
         }
     }
-    LaunchedEffect(ui.p1) { play1 = Play(0, clock, true) }
-    LaunchedEffect(ui.p2) { play2 = Play(0, clock, true) }
+    LaunchedEffect(ui.p1) { play1 = IdlePlay }
+    LaunchedEffect(ui.p2) { play2 = IdlePlay }
 
     val stage = ui.stage
     val stW = stage?.def?.localCoordX ?: 320
@@ -129,6 +213,14 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
+        note?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
             )
         }
 
@@ -170,27 +262,93 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             FilterChip(selected = active == Owner.P2, onClick = { active = Owner.P2 }, label = { Text("Golpes do P2") })
         }
 
-        val c = if (active == Owner.P1) ui.p1 else ui.p2
+        // quem ataca e quem sofre (o outro personagem)
+        val atkId = active
+        val tgtId = if (atkId == Owner.P1) Owner.P2 else Owner.P1
+        val c = if (atkId == Owner.P1) ui.p1 else ui.p2
+        val other = if (tgtId == Owner.P1) ui.p1 else ui.p2
+
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            FilterChip(selected = listMode == 0, onClick = { listMode = 0 }, label = { Text("Golpes") })
+            FilterChip(selected = listMode == 1, onClick = { listMode = 1 }, label = { Text("Animações") })
+        }
+
         if (c == null) {
             Text(
-                "Escolha um personagem em P1 ou P2 para ver as animações.",
+                "Escolha um personagem em P1 ou P2 para ver os golpes.",
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(16.dp),
             )
+        } else if (listMode == 0 && c.book == null) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("  Lendo os estados do personagem…", style = MaterialTheme.typography.bodyMedium)
+            }
         } else {
-            AnimButtons(
-                c = c,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                onPlay = { id ->
-                    val anim = c.anims[id] ?: return@AnimButtons
-                    val owner = active
-                    scope.launch {
-                        viewer.ensureAnim(owner, c, anim)
-                        val p = Play(id, clock, loopMove)
-                        if (owner == Owner.P1) play1 = p else play2 = p
-                    }
-                },
-            )
+            val items = remember(c, c.book, listMode) {
+                if (listMode == 0) c.book?.let { buildMoves(c, it) }.orEmpty() else buildAnims(c)
+            }
+            if (items.isEmpty()) {
+                Text("Nada para mostrar aqui.", modifier = Modifier.padding(16.dp))
+            } else {
+                GroupedButtons(
+                    items = items,
+                    resetKey = Pair(c, listMode),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    footer = if (listMode == 0) {
+                        "Cada botão é um estado do personagem. A animação e o adversário seguem o que o arquivo define " +
+                            "sem rodar o jogo; golpes com muitas condições podem mostrar só a animação principal."
+                    } else {
+                        "Os nomes seguem a convenção comum do Mugen; cada personagem pode usar os números de outro jeito."
+                    },
+                    onClick = { id ->
+                        note = null
+                        scope.launch {
+                            val now = clock
+                            if (listMode == 1) {
+                                val a = c.anims[id] ?: return@launch
+                                viewer.ensureAnims(atkId, c, listOf(a))
+                                val p = Play(listOf(AnimStep(id, -1, false)), now, repeat = loopMove, period = naturalLen(a))
+                                if (atkId == Owner.P1) play1 = p else play2 = p
+                                return@launch
+                            }
+                            val plan = viewer.planMove(c, id, assumeHit = other != null)
+                            if (plan == null || plan.steps.isEmpty()) {
+                                note = "Esse estado não tem animação para mostrar."
+                                return@launch
+                            }
+                            val tp = if (other != null) plan.target else null
+                            val atkAnims = LinkedHashSet<Animation>()
+                            val tgtAnims = LinkedHashSet<Animation>()
+                            for (st in plan.steps) c.anims[st.anim]?.let { atkAnims.add(it) }
+                            if (tp != null && other != null) {
+                                for (st in tp.steps) {
+                                    if (st.useOwner) c.anims[st.anim]?.let { atkAnims.add(it) }
+                                    else other.anims[st.anim]?.let { tgtAnims.add(it) }
+                                }
+                            }
+                            viewer.ensureAnims(atkId, c, atkAnims)
+                            if (other != null && tgtAnims.isNotEmpty()) viewer.ensureAnims(tgtId, other, tgtAnims)
+
+                            val start = clock
+                            val period = plan.totalTicks.coerceAtLeast(1)
+                            val atkPlay = Play(plan.steps, start, repeat = loopMove, period = period)
+                            val tgtPlay = if (tp != null && other != null) {
+                                Play(
+                                    tp.steps, start, delay = tp.startTick, repeat = loopMove, period = period,
+                                    ownerChar = c, ownerId = atkId, attacker = atkId,
+                                    binds = plan.binds, bindEnd = start + period,
+                                )
+                            } else IdlePlay
+                            if (atkId == Owner.P1) { play1 = atkPlay; play2 = tgtPlay } else { play2 = atkPlay; play1 = tgtPlay }
+                            if (tp != null) note = "O adversário reage: estado ${tp.stateNo}."
+                        }
+                    },
+                )
+            }
         }
     }
 
@@ -222,18 +380,22 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AnimButtons(c: LoadedChar, modifier: Modifier, onPlay: (Int) -> Unit) {
-    val groups = remember(c) {
-        c.anims.keys.sorted().groupBy { AnimNames.group(it) }
-    }
-    val expanded = remember(c) { mutableStateMapOf<String, Boolean>() }
+private fun GroupedButtons(
+    items: List<BtnItem>,
+    resetKey: Any,
+    modifier: Modifier,
+    footer: String,
+    onClick: (Int) -> Unit,
+) {
+    val groups = remember(items) { items.groupBy { it.group } }
+    val expanded = remember(resetKey) { mutableStateMapOf<String, Boolean>() }
     LazyColumn(modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
         for (name in GroupOrder) {
-            val ids = groups[name] ?: continue
+            val list = groups[name] ?: continue
             val open = expanded[name] ?: (name !in CollapsedByDefault)
             item(key = "h-$name") {
                 Text(
-                    (if (open) "▾ " else "▸ ") + "$name (${ids.size})",
+                    (if (open) "▾ " else "▸ ") + "$name (${list.size})",
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -244,9 +406,8 @@ private fun AnimButtons(c: LoadedChar, modifier: Modifier, onPlay: (Int) -> Unit
             if (open) {
                 item(key = "b-$name") {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        for (id in ids) {
-                            val label = AnimNames.exact(id)?.let { "$id · $it" } ?: "$id"
-                            OutlinedButton(onClick = { onPlay(id) }) { Text(label, maxLines = 1) }
+                        for (m in list) {
+                            OutlinedButton(onClick = { onClick(m.id) }) { Text(m.label, maxLines = 1) }
                         }
                     }
                 }
@@ -254,7 +415,7 @@ private fun AnimButtons(c: LoadedChar, modifier: Modifier, onPlay: (Int) -> Unit
         }
         item {
             Text(
-                "Os nomes seguem a convenção comum do Mugen; cada personagem pode usar os números de outro jeito.",
+                footer,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                 modifier = Modifier.padding(top = 12.dp),
@@ -326,10 +487,15 @@ private fun DrawScope.drawScene(
     if (stage != null) drawStageLayers(viewer, stage, clock, front = false, stW = stW, stH = stH, unit = unit)
     else drawLine(Color(0x55FFFFFF), Offset(0f, ground * unit), Offset(size.width, ground * unit), strokeWidth = 2f)
 
-    val p1x = stW / 2f + (stage?.def?.p1StartX ?: -70)
-    val p2x = stW / 2f + (stage?.def?.p2StartX ?: 70)
-    drawChar(viewer, ui.p2, Owner.P2, play2, clock, p2x, ground, -1, stW, stH, unit, showBoxes)
-    drawChar(viewer, ui.p1, Owner.P1, play1, clock, p1x, ground, 1, stW, stH, unit, showBoxes)
+    val home1 = stW / 2f + (stage?.def?.p1StartX ?: -70)
+    val home2 = stW / 2f + (stage?.def?.p2StartX ?: 70)
+    // quem está preso a um atacante (arremesso) é desenhado na posição do TargetBind
+    val pos1 = boundPos(play1, clock, if (play1.attacker == Owner.P2) ui.p2 else null, home2, -1, ground, stW, stH)
+        ?: (home1 to ground)
+    val pos2 = boundPos(play2, clock, if (play2.attacker == Owner.P1) ui.p1 else null, home1, 1, ground, stW, stH)
+        ?: (home2 to ground)
+    drawChar(viewer, ui.p2, Owner.P2, play2, clock, pos2.first, pos2.second, -1, stW, stH, unit, showBoxes)
+    drawChar(viewer, ui.p1, Owner.P1, play1, clock, pos1.first, pos1.second, 1, stW, stH, unit, showBoxes)
 
     if (stage != null) drawStageLayers(viewer, stage, clock, front = true, stW = stW, stH = stH, unit = unit)
 }
@@ -337,7 +503,7 @@ private fun DrawScope.drawScene(
 private fun DrawScope.drawChar(
     viewer: ViewerViewModel,
     c: LoadedChar?,
-    owner: Int,
+    id: Int,
     play: Play,
     clock: Float,
     px: Float,
@@ -349,24 +515,13 @@ private fun DrawScope.drawChar(
     showBoxes: Boolean,
 ) {
     if (c == null) return
-    val idle = c.anims[0] ?: c.anims.values.firstOrNull() ?: return
-    var anim = c.anims[play.anim] ?: idle
-    var tick = (clock - play.start).toInt()
-    var loop = play.loop
-    if (!play.loop) {
-        // golpe de uma vez só: depois que termina, volta para a animação parada
-        val len = anim.totalTicks + if (anim.infinite) 30 else 0
-        if (tick >= len) {
-            anim = idle
-            tick -= len
-            loop = true
-        }
-    }
-    val f = anim.frames.getOrNull(anim.frameIndexAt(tick, loop)) ?: return
-    val sx = Placement.charScale(stW, c.localCoordX, c.size.xscale)
-    val sy = Placement.charScale(stH, c.localCoordY, c.size.yscale)
+    val shown = resolve(c, id, play, clock) ?: return
+    val f = shown.anim.frames.getOrNull(shown.anim.frameIndexAt(shown.tick, shown.loop)) ?: return
+    // a escala é de quem é dono da animação (um alvo que usa a animação do atacante usa a escala dele)
+    val sx = Placement.charScale(stW, shown.c.localCoordX, shown.c.size.xscale)
+    val sy = Placement.charScale(stH, shown.c.localCoordY, shown.c.size.yscale)
 
-    val cs = viewer.sprite(owner, f.group, f.image)
+    val cs = viewer.sprite(shown.spriteOwner, f.group, f.image)
     if (cs != null) {
         val r = Placement.sprite(px, py, facing, f, cs.info, cs.w, cs.h, sx, sy)
         drawSprite(cs, r, unit, f.blend, f.alphaSrc)
