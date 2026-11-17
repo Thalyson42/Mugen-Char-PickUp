@@ -64,6 +64,11 @@ class SafTree(
 
     override fun exists(path: String): Boolean = resolveNode(path) != null
 
+    override fun listDirs(path: String): List<String> {
+        val node = resolveNode(path)?.takeIf { it.isDir } ?: return emptyList()
+        return children(node.id).filter { it.isDir }.map { it.name }
+    }
+
     override fun readText(path: String): String? =
         resolveNode(path)?.takeIf { !it.isDir }?.let { readNode(it.id) }
 

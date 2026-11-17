@@ -26,6 +26,8 @@ class MainActivity : ComponentActivity() {
 
     private val vm: MainViewModel by viewModels()
     private val defContract = OpenDefContract()
+    private val selectContract = OpenDefContract()
+    private val systemContract = OpenDefContract()
     private var pendingIndex = -1
 
     private val folderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -42,6 +44,14 @@ class MainActivity : ComponentActivity() {
         if (uri != null && pendingIndex >= 0) vm.addManual(uri, pendingIndex)
     }
 
+    private val selectLauncher = registerForActivityResult(selectContract) { uri ->
+        if (uri != null) vm.pickSelectDef(uri)
+    }
+
+    private val systemLauncher = registerForActivityResult(systemContract) { uri ->
+        if (uri != null) vm.pickSystemDef(uri)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -49,6 +59,14 @@ class MainActivity : ComponentActivity() {
                 App(
                     vm = vm,
                     onPickFolder = { folderLauncher.launch(null) },
+                    onPickSelectDef = {
+                        selectContract.initial = vm.dataFolderUri()
+                        selectLauncher.launch(arrayOf("*/*"))
+                    },
+                    onPickSystemDef = {
+                        systemContract.initial = vm.dataFolderUri()
+                        systemLauncher.launch(arrayOf("*/*"))
+                    },
                     onPickDef = { index ->
                         pendingIndex = index
                         defContract.initial = vm.charsFolderUri()

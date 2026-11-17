@@ -30,6 +30,7 @@ Basta instalar o APK novo (da aba **Releases** ou do artefato do **Actions**): o
 1. Abra o app e escolha a **pasta do Ikemen GO**, a mesma que contém `data/` e `chars/` (a que você escolheu quando o Ikemen GO pediu uma pasta).
 2. O app descobre sozinho qual `select.def` o jogo usa e o tamanho do grid (`rows` e `columns` do `system.def`). Se o grid ficar diferente do jogo, ajuste em **Menu → Tamanho do grid**.
 3. Use **Update char list** ou mexa no grid manualmente. Cada alteração é salva na hora no `select.def`.
+4. Se o app não achar (ou achar o arquivo errado), use **Menu → Escolher select.def…** e **Escolher system.def…**. A escolha fica salva e é usada sempre que o app abrir, até você trocar a pasta do jogo ou usar **Voltar à detecção automática**. O topo da tela mostra qual `select.def` e qual `system.def` estão em uso (e se foram escolhidos à mão).
 
 ### Tamanho do grid
 
@@ -37,12 +38,12 @@ Basta instalar o APK novo (da aba **Releases** ou do artefato do **Actions**): o
 
 ### Qual `select.def` é editado?
 
-A wiki do Ikemen GO avisa que **no Android não se deve editar `data/select.def` diretamente**: vale a cópia dentro da pasta do motif (por exemplo `data/ikemen1/select.def`). O app segue essa regra: lê o motif em `save/config.json`, abre o `system.def` dele e usa o `select` definido em `[Files]`, procurando primeiro na pasta do motif e depois em `data/`.
+A wiki do Ikemen GO avisa que **no Android não se deve editar `data/select.def` diretamente**: vale a cópia dentro da pasta do motif (por exemplo `data/ikemen1/select.def`). O app segue essa regra: descobre o `system.def` do motif (pelo `save/config.json` ou `save/config.ini`; se não achar, tenta `data/ikemen1/system.def`, `data/system.def` e qualquer `data/<pasta>/system.def`), usa o `select` definido em `[Files]` e procura primeiro na pasta do motif e depois em `data/`. O caminho do `select.def` em uso aparece no topo da tela.
 
 ## Limitações conhecidas
 
 - **Pasta dentro de `Android/data/...` não funciona** em Android 11+ (o sistema bloqueia o acesso de outros apps). A pasta do jogo precisa estar em um lugar acessível (armazenamento interno, Documentos...).
-- **Retratos**: cada célula mostra o *portrait* (sprite 9000,0 do `.sff`, o mesmo da tela de seleção do jogo). Lê SFF v1 e v2 (RLE8, RLE5, LZ5 e PNG). Se o personagem não tiver esse sprite, ou o `.sff` não puder ser lido, a célula mostra o nome. Os retratos são carregados só quando a célula aparece na tela.
+- **Retratos**: cada célula mostra o *portrait* (sprite 9000,0 do `.sff`, o mesmo da tela de seleção do jogo). Lê SFF v1 e v2 (RLE8, RLE5, LZ5 e PNG). As bordas transparentes são recortadas (alguns personagens usam um quadro grande com o rosto pequeno num canto) e, se o 9000,0 não tiver forma de retrato, o app tenta o 9000,100 e o 9000,1. Se não houver retrato utilizável, ou o `.sff` não puder ser lido, a célula mostra o nome. Os retratos são carregados só quando a célula aparece na tela.
 - Posição vazia é gravada como a linha `empty`. Se o seu screenpack/versão do Ikemen GO tratar isso de outro jeito, o marcador fica numa constante só (`SelectDef.EMPTY_TOKEN`).
 - Personagens com `exclude=1` não aparecem no grid e, ao salvar, são escritos depois das células do grid.
 - Blocos `slot = { ... }` aparecem como uma célula só (nome do primeiro + `×N`) e se movem/removem em conjunto.

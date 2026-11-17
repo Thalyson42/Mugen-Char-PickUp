@@ -323,6 +323,32 @@ class SffTests {
     }
 
     @Test
+    fun selectPortraitTrimsTransparentMargins() {
+        val px = ByteArray(6 * 4)
+        px[1 * 6 + 2] = 5; px[1 * 6 + 3] = 6; px[2 * 6 + 2] = 7; px[2 * 6 + 3] = 8
+        val pal = palette256(10)
+        val file = buildV2(listOf(pal), listOf(V2S(9000, 0, 6, 4, 0, 8, px)))
+        val p = SffReader.readSelectPortrait(ByteArraySource(file))!!
+        assertEquals(2, p.width)
+        assertEquals(2, p.height)
+        assertEquals(listOf(pal[5], pal[6], pal[7], pal[8]), p.argb.toList())
+    }
+
+    @Test
+    fun selectPortraitFallsBackWhenSpriteZeroIsNotPortraitShaped() {
+        val pal = palette256(10)
+        val thin = ByteArray(3 * 10) { 1 }
+        val face = ByteArray(10 * 10) { 2 }
+        val file = buildV2(listOf(pal), listOf(V2S(9000, 0, 3, 10, 0, 8, thin), V2S(9000, 100, 10, 10, 0, 8, face)))
+        val p = SffReader.readSelectPortrait(ByteArraySource(file))!!
+        assertEquals(10, p.width)
+        assertEquals(pal[2], p.argb[0])
+        // sem alternativa, mantém o 9000,0
+        val only = buildV2(listOf(pal), listOf(V2S(9000, 0, 3, 10, 0, 8, thin)))
+        assertEquals(3, SffReader.readSelectPortrait(ByteArraySource(only))!!.width)
+    }
+
+    @Test
     fun v2MissingSpriteGivesNull() {
         val file = buildV2(listOf(pal4), listOf(V2S(0, 0, 1, 1, 0, 8, byteArrayOf(1))))
         assertNull(SffReader.readPortrait(ByteArraySource(file)))

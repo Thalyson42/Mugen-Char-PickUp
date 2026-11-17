@@ -60,6 +60,10 @@ data class UiState(
     val hasFolder: Boolean = false,
     val folderName: String = "",
     val selectPath: String = "",
+    val systemPath: String = "",
+    /** O arquivo em uso foi escolhido à mão (Menu → Escolher select.def / system.def). */
+    val selectManual: Boolean = false,
+    val systemManual: Boolean = false,
     val rows: Int = 10,
     val columns: Int = 8,
     val cells: List<Cell?> = emptyList(),
@@ -84,6 +88,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val rows: Int,
         val columns: Int,
         val systemPath: String?,
+        val selectManual: Boolean = false,
+        val systemManual: Boolean = false,
+        val warnings: List<String> = emptyList(),
     )
 
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -142,7 +149,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val sprite = CharFiles.spriteFile(defText) ?: return Face.Missing
             val sffPath = defPath.substringBeforeLast('/') + "/" + sprite
             val sffNode = l.tree.resolveNode(sffPath, cached = true)?.takeIf { !it.isDir } ?: return Face.Missing
-            val portrait = l.tree.openSource(sffNode.id)?.use { SffReader.readPortrait(it, AndroidPng) }
+            val portrait = l.tree.openSource(sffNode.id)?.use { SffReader.readSelectPortrait(it, AndroidPng) }
                 ?: return Face.Missing
             var bmp = Bitmap.createBitmap(portrait.argb, portrait.width, portrait.height, Bitmap.Config.ARGB_8888)
             val big = maxOf(bmp.width, bmp.height)
@@ -170,7 +177,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- carregar ----------
 
     fun onTreePicked(uri: Uri) {
-        prefs.edit().putString(KEY_TREE, uri.toString()).apply()
+        val changed = prefs.getString(KEY_TREE, null) != uri.toString()
+        val e = prefs.edit().putString(KEY_TREE, uri.toString())
+        // As escolhas manuais são caminhos dentro da pasta antiga: não valem para outra pasta.
+        if (changed) e.remove(KEY_SELECT).remove(KEY_SYSTEM)
+        e.apply()
         load(uri)
     }
 
@@ -194,7 +205,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         loading = false, ready = true, hasFolder = true,
                         folderName = l.tree.rootId.substringAfterLast(':').substringAfterLast('/'),
-                        selectPath = l.selectPath, rows = l.rows, columns = l.columns,
+                        selectPath = l.selectPath, systemPath = l.systemPath ?: "",
+                        selectManual = l.selectManual, systemManual = l.systemManual,
+                        message = l.warnings.joinToString(" ").ifEmpty { it.message },
+                        rows = l.rows, columns = l.columns,
                         cells = cells, selected = null, canUndo = false, error = null,
                         portraitEpoch = it.portraitEpoch + 1,
                     )
@@ -220,7 +234,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } ?: error("Essa pasta não parece ser a raiz do Ikemen GO (precisa conter as pastas \"data\" e \"chars\").")
             tree = SafTree(resolver, uri, sub.id)
         }
-        val located = Locator.locate(tree) ?: error("Não encontrei o select.def dentro de \"data\".")
+        lastTree = tree // guardado antes de procurar os arquivos: o seletor manual precisa dele se a busca falhar
+        val located = Locator.locate(tree, prefs.getString(KEY_SELECT, null), prefs.getString(KEY_SYSTEM, null))
+            ?: error("Não encontrei o select.def dentro de \"data\". Use Menu → Escolher select.def.")
         val selectNode = tree.resolveNode(located.selectPath) ?: error("select.def não encontrado.")
         val text = tree.readNode(selectNode.id) ?: error("Não foi possível ler o select.def.")
         val parsed = SelectDef.parse(text)
@@ -233,6 +249,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return Loaded(
             tree, located.selectPath, selectNode.id, text, parsed, chars.name, tree.docUri(chars.id),
             rows, cols, located.systemDefPath,
+            located.selectManual, located.systemManual, located.warnings,
         )
     }
 
@@ -330,6 +347,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var systemBackupDone = false
 
+    // ---------- escolha manual de select.def / system.def ----------
+
+    @Volatile private var lastTree: SafTree? = null
+
+    /** Pasta data/ do jogo, para o seletor de arquivos já abrir nela. */
+    fun dataFolderUri(): Uri? = lastTree?.let { t -> t.resolveNode("data")?.let { t.docUri(it.id) } }
+
+    fun pickSelectDef(uri: Uri) = pickManual(uri, KEY_SELECT, isSelect = true)
+
+    fun pickSystemDef(uri: Uri) = pickManual(uri, KEY_SYSTEM, isSelect = false)
+
+    /** Apaga as escolhas manuais e volta a detectar sozinho. */
+    fun useAutoDetection() {
+        prefs.edit().remove(KEY_SELECT).remove(KEY_SYSTEM).apply()
+        reload()
+    }
+
+    private fun pickManual(uri: Uri, key: String, isSelect: Boolean) {
+        val tree = lastTree ?: return
+        viewModelScope.launch {
+            val (problem, rel) = withContext(Dispatchers.IO) { checkManual(tree, uri, isSelect) }
+            if (problem != null || rel == null) {
+                say(problem ?: "Arquivo inválido.")
+                return@launch
+            }
+            prefs.edit().putString(key, rel).apply() // guardado: o app usa este arquivo sempre que abrir
+            reload()
+        }
+    }
+
+    /** Confere se o arquivo escolhido serve, para uma escolha errada não travar o app a cada abertura. */
+    private fun checkManual(tree: SafTree, uri: Uri, isSelect: Boolean): Pair<String?, String?> {
+        val rel = tree.relativePathOf(uri) ?: return "Escolha um arquivo dentro da pasta do Ikemen GO." to null
+        if (!rel.endsWith(".def", ignoreCase = true)) return "Esse arquivo não é um .def." to null
+        val text = tree.readText(rel) ?: return "Não consegui ler esse arquivo." to null
+        if (isSelect) {
+            if (!SelectDef.parse(text).hasCharactersSection) return "Esse arquivo não tem a seção [Characters]." to null
+        } else {
+            val opts = setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE)
+            val looksLikeSystem = Regex("""^\s*\[\s*(files|select info)\s*]""", opts).containsMatchIn(text)
+            if (!looksLikeSystem) return "Esse arquivo não parece um system.def (sem [Files] nem [Select Info])." to null
+        }
+        return null to rel
+    }
+
     /** Grava rows/columns na seção [Select Info] do system.def do motif, para o jogo usar o mesmo tamanho. */
     private fun saveGridSizeToSystemDef(rows: Int, columns: Int) {
         val l = loaded ?: return
@@ -421,5 +483,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_TREE = "tree"
         const val KEY_ROWS = "rows"
         const val KEY_COLS = "columns"
+        const val KEY_SELECT = "select_override"
+        const val KEY_SYSTEM = "system_override"
     }
 }
