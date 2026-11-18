@@ -24,6 +24,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -195,16 +199,14 @@ private fun boundPos(
     return (atkX + atkFacing * cur.dx * sx) to (ground + cur.dy * sy)
 }
 
-/** Imagem pequena no lugar do texto de um botão (fundo claro para aparecer também no tema escuro). */
+/** Imagem pequena no lugar do texto de um botão. Com [tint] pinta com a cor do texto do tema (ícones de um tom só). */
 @Composable
-private fun ChipImage(res: Int, description: String) {
+private fun ChipImage(res: Int, description: String, tint: Boolean = true) {
     Image(
         painter = painterResource(res),
         contentDescription = description,
-        modifier = Modifier
-            .height(22.dp)
-            .background(Color.White, RoundedCornerShape(4.dp))
-            .padding(2.dp),
+        colorFilter = if (tint) ColorFilter.tint(LocalContentColor.current) else null,
+        modifier = Modifier.height(22.dp),
     )
 }
 
@@ -229,7 +231,7 @@ private val CollapsedByDefault = setOf("Helpers", "Reações", "Outras")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
+fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, onDialog: (Int) -> Unit) {
     val ui by viewer.ui.collectAsStateWithLifecycle()
     LaunchedEffect(source) { source?.let { viewer.open(it) } }
 
@@ -246,7 +248,6 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
     var note by remember { mutableStateOf<String?>(null) }
     var soundOn by remember { mutableStateOf(true) }
     val soundPlays = remember { ArrayList<SoundPlay>() }
-    var picker by remember { mutableIntStateOf(0) } // 0 = fechado, 1 = P1, 2 = P2, 3 = cenário
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(paused, speed) {
@@ -308,31 +309,28 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             )
         }
 
-        // personagens e cenário
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            OutlinedButton(onClick = { picker = 1 }, modifier = Modifier.weight(1f)) {
-                Text("P1: " + (ui.p1?.name ?: "—"), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            OutlinedButton(onClick = { picker = 2 }, modifier = Modifier.weight(1f)) {
-                Text("P2: " + (ui.p2?.name ?: "—"), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            OutlinedButton(onClick = { picker = 3 }, modifier = Modifier.weight(1f)) {
-                Text(stage?.option?.label ?: "Stage", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-
         // reprodução
         FlowRow(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             FilterChip(selected = paused, onClick = { paused = !paused }, label = { Text(if (paused) "▶" else "⏸") })
-            FilterChip(selected = speed == 1f, onClick = { speed = 1f }, label = { Text("1×") })
-            FilterChip(selected = speed == 0.5f, onClick = { speed = 0.5f }, label = { Text("½×") })
-            FilterChip(selected = speed == 0.25f, onClick = { speed = 0.25f }, label = { Text("¼×") })
+            Box {
+                var speedMenu by remember { mutableStateOf(false) }
+                FilterChip(
+                    selected = false,
+                    onClick = { speedMenu = true },
+                    label = { Text(speedLabel(speed) + " ▾") },
+                )
+                DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
+                    for (v in Speeds) {
+                        DropdownMenuItem(
+                            text = { Text(speedLabel(v) + if (v == speed) "  ✓" else "") },
+                            onClick = { speed = v; speedMenu = false },
+                        )
+                    }
+                }
+            }
             FilterChip(selected = loopMove, onClick = { loopMove = !loopMove }, label = { ChipImage(R.drawable.ic_repeat, "Repetir golpe") })
             FilterChip(
                 selected = soundOn,
@@ -342,7 +340,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                 },
                 label = { Text(if (soundOn) "🔊" else "🔇") },
             )
-            FilterChip(selected = showBoxes, onClick = { showBoxes = !showBoxes }, label = { ChipImage(R.drawable.ic_boxes, "Caixas") })
+            FilterChip(selected = showBoxes, onClick = { showBoxes = !showBoxes }, label = { ChipImage(R.drawable.ic_boxes, "Caixas", tint = false) })
         }
 
         // de quem são os botões
@@ -471,30 +469,36 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
         }
     }
 
-    when (picker) {
-        1, 2 -> PickerDialog(
-            title = if (picker == 1) "Personagem do P1" else "Personagem do P2",
-            options = ui.chars.map { it.entry to it.label },
-            allowNone = false,
-            onPick = { id ->
-                val opt: CharOption? = ui.chars.firstOrNull { it.entry == id }
-                if (opt != null) viewer.pickChar(if (picker == 1) Owner.P1 else Owner.P2, opt)
-                picker = 0
+    when (dialog) {
+        1 -> CharSelectDialog(
+            chars = ui.chars,
+            p1 = ui.p1?.option?.entry,
+            p2 = ui.p2?.option?.entry,
+            onOk = { e1, e2 ->
+                if (e1 != null && e1 != ui.p1?.option?.entry) ui.chars.firstOrNull { it.entry == e1 }?.let { viewer.pickChar(Owner.P1, it) }
+                if (e2 != null && e2 != ui.p2?.option?.entry) ui.chars.firstOrNull { it.entry == e2 }?.let { viewer.pickChar(Owner.P2, it) }
+                onDialog(0)
             },
-            onDismiss = { picker = 0 },
+            onDismiss = { onDialog(0) },
         )
-        3 -> PickerDialog(
-            title = "Stage",
-            options = ui.stages.map { it.path to it.label },
-            allowNone = true,
-            onPick = { id ->
-                val opt: StageOption? = ui.stages.firstOrNull { it.path == id }
-                viewer.pickStage(opt)
-                picker = 0
+        2 -> StageSelectDialog(
+            stages = ui.stages,
+            current = ui.stage?.option?.path,
+            onOk = { path ->
+                if (path != ui.stage?.option?.path) viewer.pickStage(ui.stages.firstOrNull { it.path == path })
+                onDialog(0)
             },
-            onDismiss = { picker = 0 },
+            onDismiss = { onDialog(0) },
         )
     }
+}
+
+private val Speeds = listOf(1f, 0.5f, 0.25f)
+
+private fun speedLabel(v: Float) = when (v) {
+    0.5f -> "½×"
+    0.25f -> "¼×"
+    else -> "1×"
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -543,46 +547,105 @@ private fun GroupedButtons(
     }
 }
 
+/** Lista com busca; o item marcado é [selected]. [noneLabel] != null acrescenta a opção "nenhum". */
 @Composable
-private fun PickerDialog(
-    title: String,
+private fun SelectList(
     options: List<Pair<String, String>>,
-    allowNone: Boolean,
-    onPick: (String?) -> Unit,
-    onDismiss: () -> Unit,
+    selected: String?,
+    noneLabel: String?,
+    onSelect: (String?) -> Unit,
 ) {
     var filter by remember { mutableStateOf("") }
-    val shown = remember(options, filter) {
-        options.filter { it.second.contains(filter, ignoreCase = true) }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = filter,
-                    onValueChange = { filter = it },
-                    label = { Text("Buscar") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (options.isEmpty()) {
-                    Text("Nada encontrado.", modifier = Modifier.padding(top = 12.dp))
-                }
-                LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                    if (allowNone) {
-                        item { TextButton(onClick = { onPick(null) }, modifier = Modifier.fillMaxWidth()) { Text("Sem cenário") } }
-                    }
-                    items(shown, key = { it.first }) { (id, label) ->
-                        TextButton(onClick = { onPick(id) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
-                        }
+    val shown = remember(options, filter) { options.filter { it.second.contains(filter, ignoreCase = true) } }
+    Column {
+        OutlinedTextField(
+            value = filter,
+            onValueChange = { filter = it },
+            label = { Text("Buscar") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (options.isEmpty()) Text("Nada encontrado.", modifier = Modifier.padding(top = 12.dp))
+        LazyColumn(Modifier.heightIn(max = 300.dp)) {
+            if (noneLabel != null) {
+                item {
+                    TextButton(onClick = { onSelect(null) }, modifier = Modifier.fillMaxWidth()) {
+                        Text((if (selected == null) "● " else "○ ") + noneLabel, modifier = Modifier.fillMaxWidth())
                     }
                 }
             }
+            items(shown, key = { it.first }) { (id, label) ->
+                TextButton(onClick = { onSelect(id) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        (if (id == selected) "● " else "○ ") + label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Escolha do P1 e do P2 em uma janela só; as trocas valem ao tocar em OK. */
+@Composable
+private fun CharSelectDialog(
+    chars: List<CharOption>,
+    p1: String?,
+    p2: String?,
+    onOk: (String?, String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var side by remember { mutableIntStateOf(1) }
+    var pick1 by remember { mutableStateOf(p1) }
+    var pick2 by remember { mutableStateOf(p2) }
+    val options = remember(chars) { chars.map { it.entry to it.label } }
+    fun nameOf(e: String?) = chars.firstOrNull { it.entry == e }?.label ?: "—"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Character select") },
+        text = {
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = side == 1, onClick = { side = 1 },
+                        label = { Text("P1: " + nameOf(pick1), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    FilterChip(
+                        selected = side == 2, onClick = { side = 2 },
+                        label = { Text("P2: " + nameOf(pick2), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                SelectList(
+                    options = options,
+                    selected = if (side == 1) pick1 else pick2,
+                    noneLabel = null,
+                    onSelect = { if (side == 1) pick1 = it else pick2 = it },
+                )
+            }
         },
-        confirmButton = {},
+        confirmButton = { TextButton(onClick = { onOk(pick1, pick2) }) { Text("OK") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun StageSelectDialog(
+    stages: List<StageOption>,
+    current: String?,
+    onOk: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var pick by remember { mutableStateOf(current) }
+    val options = remember(stages) { stages.map { it.path to it.label } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Stage select") },
+        text = { SelectList(options = options, selected = pick, noneLabel = "Sem stage", onSelect = { pick = it }) },
+        confirmButton = { TextButton(onClick = { onOk(pick) }) { Text("OK") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
 }
