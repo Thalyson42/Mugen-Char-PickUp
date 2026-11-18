@@ -165,12 +165,8 @@ private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
     catalog.map { e ->
         val cmds = e.commands.take(2).joinToString("/")
         val label = listOfNotNull(cmds.ifEmpty { null }, "${e.stateNo}", AnimNames.exact(e.stateNo)).joinToString(" · ")
-        // etapas de outro golpe ficam guardadas à parte: o botão do golpe já toca todas em sequência
-        val group = when {
-            e.internal -> "Etapas internas"
-            e.helper -> "Helpers"
-            else -> AnimNames.group(e.stateNo)
-        }
+        // cada estado é um botão (como antes); e.internal marca as etapas de outro golpe, para uma lista futura
+        val group = if (e.helper) "Helpers" else AnimNames.group(e.stateNo)
         BtnItem(e.stateNo, label, group)
     }
 
@@ -179,8 +175,8 @@ private fun buildAnims(c: LoadedChar): List<BtnItem> =
         BtnItem(id, AnimNames.exact(id)?.let { "$id · $it" } ?: "$id", AnimNames.group(id))
     }
 
-private val GroupOrder = listOf("Movimento", "Normais", "Especiais", "Supers", "Outros", "Helpers", "Etapas internas", "Reações", "Outras")
-private val CollapsedByDefault = setOf("Helpers", "Etapas internas", "Reações", "Outras")
+private val GroupOrder = listOf("Movimento", "Normais", "Especiais", "Supers", "Outros", "Helpers", "Reações", "Outras")
+private val CollapsedByDefault = setOf("Helpers", "Reações", "Outras")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
