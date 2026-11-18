@@ -20,7 +20,7 @@ class CatalogEntry(
  */
 object MoveCatalog {
 
-    fun build(book: StateBook, anims: (Int) -> Animation?): List<CatalogEntry> {
+    fun build(book: StateBook, isolated: Boolean = false, anims: (Int) -> Animation?): List<CatalogEntry> {
         val commands = book.commandsByState
         val helpers = book.helperClosure
         val intRe = Regex("""^-?\d+$""")
@@ -45,11 +45,11 @@ object MoveCatalog {
             // estados que escolhem o caminho com ishelper(...) são planejados como o caminho do helper (ex.: agarrão do helper)
             val isHelper = no in helpers || def.props["anim"]?.contains("ishelper", true) == true ||
                 def.controllers.any { c -> (c.type == "changestate" || c.type == "changeanim") && c.param("value")?.contains("ishelper", true) == true }
-            val plan = MovePlanner.plan(book, no, anims, PlanOptions(asHelper = isHelper)) ?: continue
+            val plan = MovePlanner.plan(book, no, anims, PlanOptions(asHelper = isHelper, singleState = isolated)) ?: continue
             if (plan.steps.none { anims(it.anim) != null }) continue
             out += CatalogEntry(no, plan, commands[no].orEmpty(), isHelper, internal = no in continuations)
             for (v in plan.states) {
-                if (v > no && v !in book.helperStates && !commands.containsKey(v)) hidden.add(v)
+                if (!isolated && v > no && v !in book.helperStates && !commands.containsKey(v)) hidden.add(v)
             }
         }
         return out

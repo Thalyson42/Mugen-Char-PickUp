@@ -248,7 +248,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             // analisa os golpes fora da thread principal: são centenas de planos
             c.catalog = withContext(Dispatchers.Default) {
                 try {
-                    MoveCatalog.build(book) { c.anims[it] }
+                    MoveCatalog.build(book, isolated = true) { c.anims[it] }
                 } catch (e: Exception) {
                     emptyList()
                 }
@@ -278,7 +278,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.Default) {
             val book = c.book ?: return@withContext null
             val helper = c.catalog?.firstOrNull { it.stateNo == stateNo }?.helper == true
-            MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit, asHelper = helper))
+            MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit, asHelper = helper, singleState = true))
         }
 
     // ---------------------------------------------------------------- sprites

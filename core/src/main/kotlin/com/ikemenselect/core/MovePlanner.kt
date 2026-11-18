@@ -40,6 +40,11 @@ class PlanOptions(
     val holdInfinite: Int = 60,
     /** O estado roda dentro de um Helper (ishelper = 1). */
     val asHelper: Boolean = false,
+    /**
+     * Planeja só o estado pedido: não segue os ChangeState para as etapas seguintes. A animação do estado toca até o fim
+     * e o alvo vai para o(s) estado(s) que este estado manda (TargetState/HitDef dele), não os das etapas seguintes.
+     */
+    val singleState: Boolean = false,
 )
 
 /**
@@ -117,10 +122,12 @@ object MovePlanner {
 
             outer@ while (g < opts.maxTicks) {
                 var changes = 0
+                var leaving = false
                 while (true) {
                     val def = book.states[state] ?: break@outer
                     var changed = false
                     for (c in def.controllers) {
+                        if (leaving && (c.type == "changestate" || c.type == "selfstate")) continue
                         when (c.type) {
                             "changeanim", "changeanim2" -> {
                                 if (c.type == "changeanim2" && !asTarget) continue
@@ -132,6 +139,10 @@ object MovePlanner {
                                 if (!fires(c, optimistic = false)) continue
                                 val v = intParam(c, "value") ?: continue
                                 if (v == state) continue
+                                if (opts.singleState) {
+                                    leaving = true // sai deste estado, mas o resto do tick dele ainda vale
+                                    continue
+                                }
                                 // voltou para um estado comum de movimento: o golpe terminou
                                 if ((v in 0..199 && v != start) || book.states[v] == null) {
                                     endTick = g + 1
@@ -167,6 +178,17 @@ object MovePlanner {
                     if (!changed) break
                     if (++changes > 8) break
                 }
+                if (leaving) {
+                    // a animação do estado toca até o fim natural, mesmo que a troca de estado já tenha disparado
+                    val a = anims(anim)
+                    val natural = when {
+                        a == null -> NO_ANIM_TICKS
+                        a.infinite -> a.totalTicks + opts.holdInfinite
+                        else -> a.totalTicks
+                    }
+                    endTick = maxOf(g + 1, animStart + natural)
+                    break@outer
+                }
 
                 // estado que nunca definiu animação: não há o que mostrar
                 if (anim < 0 && g >= NO_ANIM_TICKS) {
@@ -182,7 +204,7 @@ object MovePlanner {
                     else -> elapsed >= a.totalTicks - 1
                 }
                 if (animDone && stateTime >= horizon(state)) {
-                    val next = if (visited.size < MAX_STATE_CHANGES) optimisticExit() else null
+                    val next = if (!opts.singleState && visited.size < MAX_STATE_CHANGES) optimisticExit() else null
                     if (next != null) {
                         enter(next)
                         continue@outer

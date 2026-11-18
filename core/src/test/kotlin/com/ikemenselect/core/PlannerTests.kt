@@ -543,4 +543,41 @@ class PlannerTests {
         assertEquals(400, plan.target!!.stateNo) // compatível: o primeiro
         assertEquals(800, plan.targets[1].steps.first().anim)
     }
+
+    @Test
+    fun singleStateModePlansOnlyThatStateAndItsOwnTarget() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 400
+            [State 300, n]
+            type = ChangeState
+            trigger1 = time = 2
+            value = 301
+            [Statedef 301]
+            anim = 201
+            [State 301, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        val one = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(listOf(300), one.states)
+        assertEquals(listOf(400), one.targets.map { it.stateNo })
+        assertEquals(10, one.totalTicks) // a animação 200 (10 ticks) toca inteira mesmo com a troca em time = 2
+        val second = MovePlanner.plan(b, 301, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(listOf(401), second.targets.map { it.stateNo })
+        // no catálogo isolado, 301 tem o próprio botão
+        val list = MoveCatalog.build(b, isolated = true) { animMap[it] }
+        assertTrue(list.any { it.stateNo == 301 })
+    }
 }
