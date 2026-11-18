@@ -52,11 +52,12 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import com.ikemenselect.core.AnimNames
 import com.ikemenselect.core.AnimStep
 import com.ikemenselect.core.Animation
 import com.ikemenselect.core.Bind
-import com.ikemenselect.core.StateBook
+import com.ikemenselect.core.CatalogEntry
 import com.ikemenselect.core.Blend
 import com.ikemenselect.core.Placement
 import com.ikemenselect.core.RectF
@@ -127,7 +128,7 @@ private fun resolve(c: LoadedChar, id: Int, play: Play, clock: Float): Shown? {
 private fun boundPos(
     play: Play, clock: Float, atk: LoadedChar?, atkX: Float, atkFacing: Int, ground: Float, stW: Int, stH: Int,
 ): Pair<Float, Float>? {
-    if (play.binds.isEmpty() || atk == null || clock >= play.bindEnd) return null
+    if (play.binds.isEmpty() || atk == null || (!play.repeat && clock >= play.bindEnd)) return null
     val t = playTime(play, clock)
     var cur: Bind? = null
     for (b in play.binds) if (b.start <= t) cur = b else break
@@ -139,23 +140,20 @@ private fun boundPos(
 
 private class BtnItem(val id: Int, val label: String, val group: String)
 
-private fun buildMoves(c: LoadedChar, book: StateBook): List<BtnItem> =
-    book.states.values
-        .filter { it.no >= 0 && it.anim != null && c.anims.containsKey(it.anim!!) }
-        .sortedBy { it.no }
-        .map { st ->
-            val cmds = book.commandsByState[st.no].orEmpty().take(2).joinToString("/")
-            val label = listOfNotNull(cmds.ifEmpty { null }, "${st.no}", AnimNames.exact(st.no)).joinToString(" · ")
-            BtnItem(st.no, label, AnimNames.group(st.no))
-        }
+private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
+    catalog.map { e ->
+        val cmds = e.commands.take(2).joinToString("/")
+        val label = listOfNotNull(cmds.ifEmpty { null }, "${e.stateNo}", AnimNames.exact(e.stateNo)).joinToString(" · ")
+        BtnItem(e.stateNo, label, if (e.helper) "Helpers" else AnimNames.group(e.stateNo))
+    }
 
 private fun buildAnims(c: LoadedChar): List<BtnItem> =
     c.anims.keys.sorted().map { id ->
         BtnItem(id, AnimNames.exact(id)?.let { "$id · $it" } ?: "$id", AnimNames.group(id))
     }
 
-private val GroupOrder = listOf("Movimento", "Normais", "Especiais", "Supers", "Outros", "Reações", "Outras")
-private val CollapsedByDefault = setOf("Reações", "Outras")
+private val GroupOrder = listOf("Movimento", "Normais", "Especiais", "Supers", "Outros", "Helpers", "Reações", "Outras")
+private val CollapsedByDefault = setOf("Helpers", "Reações", "Outras")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -186,6 +184,12 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             last = now
         }
     }
+    LaunchedEffect(note) {
+        if (note != null) {
+            delay(4000)
+            note = null
+        }
+    }
     LaunchedEffect(ui.p1) { play1 = IdlePlay }
     LaunchedEffect(ui.p2) { play2 = IdlePlay }
 
@@ -205,6 +209,19 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                 drawScene(viewer, ui, play1, play2, clock, showBoxes, stW, stH)
             }
             if (ui.busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
+            // aviso sobre o cenário (não ocupa espaço na coluna, para os botões não se mexerem)
+            note?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .background(Color(0x99000000))
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
         }
 
         ui.error?.let {
@@ -213,14 +230,6 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-        }
-
-        note?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
             )
         }
 
@@ -282,14 +291,14 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(16.dp),
             )
-        } else if (listMode == 0 && c.book == null) {
+        } else if (listMode == 0 && c.catalog == null) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                Text("  Lendo os estados do personagem…", style = MaterialTheme.typography.bodyMedium)
+                Text("  Analisando os golpes do personagem…", style = MaterialTheme.typography.bodyMedium)
             }
         } else {
-            val items = remember(c, c.book, listMode) {
-                if (listMode == 0) c.book?.let { buildMoves(c, it) }.orEmpty() else buildAnims(c)
+            val items = remember(c, c.catalog, listMode) {
+                if (listMode == 0) c.catalog?.let { buildMoves(it) }.orEmpty() else buildAnims(c)
             }
             if (items.isEmpty()) {
                 Text("Nada para mostrar aqui.", modifier = Modifier.padding(16.dp))

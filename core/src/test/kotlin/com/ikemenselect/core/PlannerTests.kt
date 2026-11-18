@@ -358,4 +358,105 @@ class PlannerTests {
         assertNull(plan(book("[Statedef 1]\nanim=0\n"), 77))
         assertNotNull(plan(book("[Statedef 1]\nanim=0\n"), 1))
     }
+
+    // ------------------------------------------------------------ continuações e catálogo
+
+    private val chainBook = """
+        [Statedef 240]
+        type = S
+        anim = 200
+        [State 240, a]
+        type = ChangeAnim
+        trigger1 = time = 20
+        value = 201
+        [State 240, b]
+        type = ChangeState
+        trigger1 = time > 15 && anim = 200 && frontedgebodydist <= 20
+        value = 241
+        [Statedef 241]
+        type = S
+        anim = 210
+        [State 241, end]
+        type = ChangeState
+        trigger1 = animtime = 0
+        value = 0
+        [Statedef 242]
+        type = S
+        anim = 210
+        [State 242, end]
+        type = ChangeState
+        trigger1 = time = 30
+        value = 0
+    """
+
+    @Test
+    fun animelemWithTimeAndAxisSuffixAreUnderstood() {
+        val c = ctx("animelemtime" to 0.0, "p2bodydist.x" to 10.0)
+        assertEquals(true, Expr.truth("animelem = 2, = 0", c))
+        assertEquals(true, Expr.truth("animelem = 2, 0", c))
+        assertEquals(true, Expr.truth("animelem = 2, >= 0", c))
+        assertEquals(true, Expr.truth("p2bodydist x < 20", c))
+    }
+
+    @Test
+    fun moveWaitsForLateTriggersAndChainsIntoTheContinuation() {
+        val b = book(chainBook)
+        val p = plan(b, 240)!!
+        assertEquals(listOf(240, 241), p.states)
+        assertTrue(p.totalTicks > 20)
+    }
+
+    @Test
+    fun optimisticExitFollowsChangeStateWithUnknownTrigger() {
+        val b = book(
+            """
+            [Statedef 300]
+            type = S
+            anim = 200
+            [State 300, x]
+            type = ChangeState
+            trigger1 = enemyfoo > 3
+            value = 242
+            [Statedef 242]
+            type = S
+            anim = 201
+            """,
+        )
+        assertEquals(listOf(300, 242), plan(b, 300)!!.states)
+    }
+
+    @Test
+    fun catalogHidesContinuationsButKeepsHelpersAndNoAnimStates() {
+        val b = book(
+            chainBook,
+            """
+            [Statedef 800]
+            type = S
+            anim = cond(ishelper(3000), 800, 201)
+            [State 800, end]
+            type = ChangeState
+            trigger1 = time = 5
+            value = 0
+            [Statedef 900]
+            type = S
+            [State 900, a]
+            type = ChangeAnim
+            trigger1 = time = 0
+            value = 201
+            [State 900, helper]
+            type = Helper
+            trigger1 = time = 0
+            stateno = 800
+            """,
+        )
+        val list = MoveCatalog.build(b) { animMap[it] }
+        val nos = list.map { it.stateNo }
+        assertTrue(240 in nos)
+        assertTrue(241 !in nos) // continuação de 240
+        assertTrue(242 in nos) // outro golpe
+        assertTrue(800 in nos) // estado de helper
+        assertTrue(900 in nos) // anim só por ChangeAnim
+        assertTrue(list.first { it.stateNo == 800 }.helper)
+        assertEquals(800, list.first { it.stateNo == 800 }.plan.steps.first().anim)
+    }
 }

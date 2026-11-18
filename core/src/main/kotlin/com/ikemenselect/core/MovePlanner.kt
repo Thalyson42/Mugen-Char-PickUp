@@ -33,6 +33,8 @@ class PlanOptions(
     val maxTicks: Int = 900,
     /** Quantos ticks segurar uma animação que nunca termina. */
     val holdInfinite: Int = 60,
+    /** O estado roda dentro de um Helper (ishelper = 1). */
+    val asHelper: Boolean = false,
 )
 
 /**
@@ -59,6 +61,9 @@ object MovePlanner {
     }
 
     private const val MAX_STATE_CHANGES = 12
+    private const val MAX_HORIZON = 400
+    private val horizonTypes = setOf("changeanim", "changeanim2", "changestate", "selfstate", "targetstate", "hitdef", "targetbind")
+    private val timeCmp = Regex("""\btime\s*(>=|>|=|<=|<)\s*(\d+)""", RegexOption.IGNORE_CASE)
     private const val NO_ANIM_TICKS = 20
 
     private class Hit(val tick: Int, val stateNo: Int)
@@ -97,7 +102,7 @@ object MovePlanner {
         fun run(): RunResult {
             val def0 = book.states[start]
             visited.add(start)
-            def0?.anim?.let { setAnim(it, false) }
+            startAnim(def0)?.let { setAnim(it, false) }
             var endTick = -1
 
             outer@ while (g < opts.maxTicks) {
@@ -126,11 +131,7 @@ object MovePlanner {
                                     endTick = g
                                     break@outer
                                 }
-                                prevState = state
-                                state = v
-                                stateTime = 0
-                                visited.add(v)
-                                book.states[v]?.anim?.let { if (it != anim || animOwner) setAnim(it, false) }
+                                enter(v)
                                 changed = true
                             }
                             "targetstate" -> if (!asTarget && firedOnce.add(c) ) {
@@ -162,16 +163,22 @@ object MovePlanner {
                     endTick = g
                     break
                 }
-                // fim natural da animação atual sem nenhuma troca: o golpe acabou
+                // fim da animação atual (e do tempo que os gatilhos do estado esperam) sem nenhuma troca
                 val a = anims(anim)
-                if (a != null) {
-                    val elapsed = g - animStart
-                    if (a.infinite) {
-                        if (elapsed >= a.totalTicks + opts.holdInfinite) { endTick = g + 1; break }
-                    } else if (elapsed >= a.totalTicks - 1) {
-                        endTick = g + 1
-                        break
+                val elapsed = g - animStart
+                val animDone = when {
+                    a == null -> elapsed >= NO_ANIM_TICKS
+                    a.infinite -> elapsed >= a.totalTicks + opts.holdInfinite
+                    else -> elapsed >= a.totalTicks - 1
+                }
+                if (animDone && stateTime >= horizon(state)) {
+                    val next = if (visited.size < MAX_STATE_CHANGES) optimisticExit() else null
+                    if (next != null) {
+                        enter(next)
+                        continue@outer
                     }
+                    endTick = g + 1
+                    break
                 }
                 g++
                 stateTime++
@@ -179,6 +186,58 @@ object MovePlanner {
             val total = if (endTick >= 0) endTick else g
             closeStep(total, natural = endTick >= 0)
             return RunResult(steps, visited, total, hits, binds)
+        }
+
+        private fun enter(v: Int) {
+            prevState = state
+            state = v
+            stateTime = 0
+            visited.add(v)
+            startAnim(book.states[v])?.let { if (it != anim || animOwner) setAnim(it, false) }
+        }
+
+        private fun startAnim(def: StateDef?): Int? {
+            if (def == null) return null
+            def.anim?.let { return it }
+            val raw = def.props["anim"] ?: return null
+            return (Expr.eval(raw, this) as? Double)?.toInt()
+        }
+
+        private val horizons = HashMap<Int, Int>()
+
+        /** Maior `time` que os gatilhos de troca/alvo do estado esperam: até lá a animação segura o último quadro. */
+        private fun horizon(no: Int): Int = horizons.getOrPut(no) {
+            var best = 0
+            val def = book.states[no] ?: return@getOrPut 0
+            for (c in def.controllers) {
+                if (c.type !in horizonTypes) continue
+                for (line in c.triggerAll + c.triggerGroups.flatten()) {
+                    for (m in timeCmp.findAll(line)) {
+                        val n = m.groupValues[2].toIntOrNull() ?: continue
+                        val v = when (m.groupValues[1]) { ">" -> n + 1; else -> n }
+                        if (v > best) best = v
+                    }
+                }
+            }
+            best.coerceAtMost(MAX_HORIZON)
+        }
+
+        /**
+         * O estado acabou e nenhum gatilho trocou de estado (por não sabermos coisas como a distância do adversário):
+         * segue o primeiro ChangeState para um estado de golpe cujos gatilhos não são conhecidos como falsos.
+         */
+        private fun optimisticExit(): Int? {
+            val def = book.states[state] ?: return null
+            for (c in def.controllers) {
+                if (c.type != "changestate" && c.type != "selfstate") continue
+                val v = intParam(c, "value") ?: continue
+                if (v !in 200..4999 || v == state || v in visited || book.states[v] == null) continue
+                if (v in book.helperStates) continue
+                val text = (c.triggerAll + c.triggerGroups.flatten()).joinToString(" ")
+                if (text.contains("command", ignoreCase = true)) continue
+                if (fires(c, optimistic = true)) return v
+            }
+            return null
         }
 
         /** Junta binds seguidos na mesma posição (um controlador que dispara a cada tick) em um só. */
@@ -250,7 +309,15 @@ object MovePlanner {
                 "alive" -> 1.0
                 "roundstate" -> 2.0
                 "numenemy" -> 1.0
-                "ishelper" -> 0.0
+                "ishelper" -> if (opts.asHelper) 1.0 else 0.0
+                "cond" -> {
+                    val c = args?.getOrNull(0) as? Double
+                    if (c == null) null else if (c != 0.0) args.getOrNull(1) else args.getOrNull(2)
+                }
+                "frontedgebodydist", "frontedgedist", "backedgebodydist", "backedgedist" -> 0.0
+                "p2bodydist.x", "p2bodydist", "enemybodydist.x", "enemybodydist" -> if (opts.assumeHit) 10.0 else null
+                "p2dist.x", "p2dist", "enemydist.x", "enemydist" -> if (opts.assumeHit) 40.0 else null
+                "p2bodydist.y", "p2dist.y", "enemybodydist.y", "enemydist.y" -> if (opts.assumeHit) 0.0 else null
                 "var", "fvar", "sysvar", "sysfvar" -> 0.0
                 "movehit", "movecontact" -> if (opts.assumeHit) 1.0 else 0.0
                 "moveguarded" -> 0.0

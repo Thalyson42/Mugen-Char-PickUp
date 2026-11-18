@@ -44,6 +44,35 @@ class StateBook(val states: Map<Int, StateDef>, val commandNames: Set<String>) {
         out.mapValues { it.value.toList() }
     }
 
+    /** Estados que algum controlador Helper inicia (`stateno = N`). */
+    val helperStates: Set<Int> by lazy {
+        val out = LinkedHashSet<Int>()
+        for (st in states.values) for (c in st.controllers) {
+            if (c.type != "helper") continue
+            c.param("stateno")?.trim()?.toIntOrNull()?.let { out.add(it) }
+        }
+        out
+    }
+
+    /** Estados dos Helpers e os que eles alcançam por ChangeState (só de 200 em diante, para não pegar o movimento comum). */
+    val helperClosure: Set<Int> by lazy {
+        val out = LinkedHashSet<Int>(helperStates)
+        val queue = ArrayDeque(helperStates)
+        while (queue.isNotEmpty()) {
+            val st = states[queue.removeFirst()] ?: continue
+            for (c in st.controllers) {
+                if (c.type != "changestate" && c.type != "selfstate") continue
+                val raw = c.param("value")?.trim() ?: continue
+                // valor fixo ou expressão (cond(...)): vale qualquer número que aparece nela
+                for (m in Regex("""\d+""").findAll(raw)) {
+                    val v = m.value.toIntOrNull() ?: continue
+                    if (v >= 200 && states.containsKey(v) && out.add(v)) queue.addLast(v)
+                }
+            }
+        }
+        out
+    }
+
     companion object {
         val EMPTY = StateBook(emptyMap(), emptySet())
 

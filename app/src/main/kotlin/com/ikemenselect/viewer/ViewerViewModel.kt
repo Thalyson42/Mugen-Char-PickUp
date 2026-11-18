@@ -13,6 +13,8 @@ import com.ikemenselect.core.CharDef
 import com.ikemenselect.core.CharFiles
 import com.ikemenselect.core.CharSize
 import com.ikemenselect.core.MovePlan
+import com.ikemenselect.core.CatalogEntry
+import com.ikemenselect.core.MoveCatalog
 import com.ikemenselect.core.MovePlanner
 import com.ikemenselect.core.PlanOptions
 import com.ikemenselect.core.StateBook
@@ -53,6 +55,9 @@ class LoadedChar(
 ) {
     /** Estados e comandos; null enquanto estão sendo lidos. */
     @Volatile var book: StateBook? = null
+
+    /** Lista de golpes já planejada (com as continuações juntas); null enquanto está sendo calculada. */
+    @Volatile var catalog: List<CatalogEntry>? = null
 }
 
 class LoadedStage(
@@ -240,6 +245,15 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             }
             c.book = book
             _ui.update { it.copy(version = it.version + 1) }
+            // analisa os golpes fora da thread principal: são centenas de planos
+            c.catalog = withContext(Dispatchers.Default) {
+                try {
+                    MoveCatalog.build(book) { c.anims[it] }
+                } catch (e: Exception) {
+                    emptyList()
+                }
+            }
+            _ui.update { it.copy(version = it.version + 1) }
         }
     }
 
@@ -263,7 +277,8 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun planMove(c: LoadedChar, stateNo: Int, assumeHit: Boolean): MovePlan? =
         withContext(Dispatchers.Default) {
             val book = c.book ?: return@withContext null
-            MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit))
+            val helper = c.catalog?.firstOrNull { it.stateNo == stateNo }?.helper == true
+            MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit, asHelper = helper))
         }
 
     // ---------------------------------------------------------------- sprites

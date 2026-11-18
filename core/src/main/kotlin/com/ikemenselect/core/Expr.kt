@@ -24,8 +24,16 @@ object Expr {
 
     /** Lê a expressão. Devolve null se usa algo que não suportamos (ex.: redirecionamento com vírgula). */
     private fun parse(text: String): Node? = synchronized(cache) {
-        cache.getOrPut(text) { Parser(tokenize(text) ?: return@getOrPut null).parseAll() }
+        cache.getOrPut(text) { Parser(tokenize(normalize(text)) ?: return@getOrPut null).parseAll() }
     }
+
+    private val animElemPair = Regex("""\banimelem\s*=\s*(\d+)\s*,\s*(<=|>=|!=|=|<|>)?\s*(-?\d+)""", RegexOption.IGNORE_CASE)
+    private val axisSuffix = Regex("""\b(p2bodydist|p2dist|enemydist|enemybodydist)\s+([xy])\b""", RegexOption.IGNORE_CASE)
+
+    /** `animelem = N, op X` vira `animelemtime(N) op X`; `p2bodydist x` vira `p2bodydist.x`. */
+    private fun normalize(text: String): String =
+        text.replace(animElemPair) { m -> "animelemtime(${m.groupValues[1]}) ${m.groupValues[2].ifEmpty { "=" }} ${m.groupValues[3]}" }
+            .replace(axisSuffix) { m -> "${m.groupValues[1]}.${m.groupValues[2]}" }
 
     /** Avalia. null = desconhecido. */
     fun eval(text: String, ctx: ExprContext): Any? {
