@@ -13,6 +13,11 @@ class TargetPlan(
     val steps: List<AnimStep>,
     /** Outros estados que o atacante também manda no mesmo tick (ordens para helpers diferentes, por exemplo): vale o último. */
     val alternatives: List<Int> = emptyList(),
+    /** `sprpriority` do estado do alvo: quem tem o maior valor é desenhado por cima. */
+    val sprPriority: Int = 0,
+    /** Controlador Offset do estado do alvo: desloca só o desenho (x à frente, y para baixo), em pixels do personagem. */
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
 )
 
 class MovePlan(
@@ -29,7 +34,20 @@ class MovePlan(
      * Um golpe encadeado (agarrão com várias etapas) troca o estado do alvo a cada etapa; [target] é só o primeiro.
      */
     val targets: List<TargetPlan> = listOfNotNull(target),
+    /** `sprpriority` do estado do atacante. */
+    val sprPriority: Int = 0,
 ) {
+    /**
+     * Prisões do alvo ao atacante. Se o golpe não tem TargetBind mas o alvo toca a animação do atacante (ChangeAnim2),
+     * as duas animações foram feitas para ficarem juntas: o alvo fica na origem do atacante a partir dessa etapa.
+     */
+    val effectiveBinds: List<Bind>
+        get() {
+            if (binds.isNotEmpty()) return binds
+            val ph = targets.firstOrNull { p -> p.steps.any { it.useOwner } } ?: return emptyList()
+            return listOf(Bind(ph.startTick, Int.MAX_VALUE / 2, 0f, 0f))
+        }
+
     /** Todas as animações que o plano usa (para carregar os sprites antes de tocar). */
     fun animsUsed(owner: Boolean): Set<Int> {
         val out = LinkedHashSet<Int>()
@@ -60,6 +78,9 @@ class PlanOptions(
  * desconhecido = não dispara; para o que o adversário sofre, desconhecido = dispara.
  */
 object MovePlanner {
+    private fun priorityOf(book: StateBook, stateNo: Int): Int =
+        book.states[stateNo]?.props?.get("sprpriority")?.trim()?.toIntOrNull() ?: 0
+
 
     /** Planeja o golpe do estado [stateNo]. null se o estado não existe. */
     fun plan(book: StateBook, stateNo: Int, anims: (Int) -> Animation?, opts: PlanOptions = PlanOptions()): MovePlan? {
@@ -78,11 +99,19 @@ object MovePlanner {
         for (h in byTick.values) {
             if (h.stateNo == prevState) continue // repetir o mesmo estado não é uma etapa nova
             val t = Runner(book, anims, opts, asTarget = true, start = h.stateNo).run()
-            phases.add(TargetPlan(h.tick, h.stateNo, t.steps, sameTick[h.tick].orEmpty().filter { it != h.stateNo }))
+            val off = book.states[h.stateNo]?.controllers?.firstOrNull { it.type == "offset" }
+            phases.add(
+                TargetPlan(
+                    h.tick, h.stateNo, t.steps, sameTick[h.tick].orEmpty().filter { it != h.stateNo },
+                    sprPriority = priorityOf(book, h.stateNo),
+                    offsetX = off?.param("x")?.trim()?.toFloatOrNull() ?: 0f,
+                    offsetY = off?.param("y")?.trim()?.toFloatOrNull() ?: 0f,
+                ),
+            )
             prevState = h.stateNo
         }
         val target = phases.firstOrNull()
-        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds, phases)
+        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds, phases, priorityOf(book, stateNo))
     }
 
     private const val MAX_STATE_CHANGES = 12

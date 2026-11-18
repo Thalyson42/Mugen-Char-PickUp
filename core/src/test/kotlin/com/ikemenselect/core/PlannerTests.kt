@@ -610,4 +610,39 @@ class PlannerTests {
         assertEquals(listOf(401), e.plan.targets.map { it.stateNo })
         assertEquals(listOf(400), e.plan.targets[0].alternatives)
     }
+
+    @Test
+    fun priorityOffsetAndImplicitBindFromTargetStates() {
+        val b = book(
+            """
+            [Statedef 300]
+            sprpriority = -20
+            anim = 200
+            [State 300, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 400
+            [Statedef 400]
+            sprpriority = -18
+            [State 400, o]
+            type = Offset
+            trigger1 = 1
+            x = 3
+            y = -35
+            [State 400, a]
+            type = ChangeAnim2
+            trigger1 = !time
+            value = 201
+            """,
+        )
+        val plan = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(-20, plan.sprPriority)
+        assertEquals(-18, plan.targets[0].sprPriority)
+        assertEquals(-35f, plan.targets[0].offsetY)
+        assertEquals(3f, plan.targets[0].offsetX)
+        assertTrue(plan.binds.isEmpty())
+        // o alvo toca a animação do atacante e não há TargetBind: fica na origem do atacante
+        assertEquals(1, plan.effectiveBinds.size)
+        assertEquals(0f, plan.effectiveBinds[0].dx)
+    }
 }

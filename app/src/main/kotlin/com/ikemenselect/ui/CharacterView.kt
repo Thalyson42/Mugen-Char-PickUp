@@ -96,7 +96,15 @@ private class Play(
     val bindEnd: Float = 0f,
     /** Etapas do alvo em golpes encadeados: a cada uma o atacante manda o alvo para outro estado (substitui [steps]). */
     val phases: List<TargetPlan> = emptyList(),
+    /** `sprpriority` do estado de quem ataca (do alvo vale o da etapa ativa em [phases]). */
+    val priority: Int = 0,
 )
+
+private fun activePhase(play: Play, clock: Float): TargetPlan? =
+    if (play.phases.isEmpty()) null else playTime(play, clock).let { t -> play.phases.lastOrNull { it.startTick <= t } }
+
+private fun priorityOf(play: Play, clock: Float): Int =
+    if (play.phases.isNotEmpty()) activePhase(play, clock)?.sprPriority ?: 0 else play.priority
 
 private val IdlePlay = Play(emptyList(), 0f)
 
@@ -367,12 +375,12 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
 
                             val start = clock
                             val period = plan.totalTicks.coerceAtLeast(1)
-                            val atkPlay = Play(plan.steps, start, repeat = loopMove, period = period)
+                            val atkPlay = Play(plan.steps, start, repeat = loopMove, period = period, priority = plan.sprPriority)
                             val tgtPlay = if (tp != null && other != null) {
                                 Play(
                                     tp.steps, start, delay = tp.startTick, repeat = loopMove, period = period,
                                     ownerChar = c, ownerId = atkId, attacker = atkId,
-                                    binds = plan.binds, bindEnd = start + period, phases = plan.targets,
+                                    binds = plan.effectiveBinds, bindEnd = start + period, phases = plan.targets,
                                 )
                             } else IdlePlay
                             if (atkId == Owner.P1) { play1 = atkPlay; play2 = tgtPlay } else { play2 = atkPlay; play1 = tgtPlay }
@@ -540,8 +548,23 @@ private fun DrawScope.drawScene(
         ?: (home1 to ground)
     val pos2 = boundPos(play2, clock, if (play2.attacker == Owner.P1) ui.p1 else null, home1, 1, ground, stW, stH)
         ?: (home2 to ground)
-    drawChar(viewer, ui.p2, Owner.P2, play2, clock, pos2.first, pos2.second, -1, stW, stH, unit, showBoxes)
-    drawChar(viewer, ui.p1, Owner.P1, play1, clock, pos1.first, pos1.second, 1, stW, stH, unit, showBoxes)
+
+    // Offset do estado do alvo: desloca só o desenho
+    fun shifted(pos: Pair<Float, Float>, play: Play, c: LoadedChar?, facing: Int): Pair<Float, Float> {
+        val ph = activePhase(play, clock) ?: return pos
+        if (c == null || (ph.offsetX == 0f && ph.offsetY == 0f)) return pos
+        val sx = Placement.charScale(stW, c.localCoordX, c.size.xscale)
+        val sy = Placement.charScale(stH, c.localCoordY, c.size.yscale)
+        return (pos.first + facing * ph.offsetX * sx) to (pos.second + ph.offsetY * sy)
+    }
+    val d1 = shifted(pos1, play1, ui.p1, 1)
+    val d2 = shifted(pos2, play2, ui.p2, -1)
+
+    // sprpriority: quem tem o maior valor fica por cima; empate mantém o P1 na frente
+    val onTop2 = priorityOf(play2, clock) > priorityOf(play1, clock)
+    if (onTop2) drawChar(viewer, ui.p1, Owner.P1, play1, clock, d1.first, d1.second, 1, stW, stH, unit, showBoxes)
+    drawChar(viewer, ui.p2, Owner.P2, play2, clock, d2.first, d2.second, -1, stW, stH, unit, showBoxes)
+    if (!onTop2) drawChar(viewer, ui.p1, Owner.P1, play1, clock, d1.first, d1.second, 1, stW, stH, unit, showBoxes)
 
     if (stage != null) drawStageLayers(viewer, stage, clock, front = true, stW = stW, stH = stH, unit = unit)
 }
