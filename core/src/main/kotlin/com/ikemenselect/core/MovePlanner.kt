@@ -7,7 +7,13 @@ class AnimStep(val anim: Int, val ticks: Int, val useOwner: Boolean)
 class Bind(val start: Int, val ticks: Int, val dx: Float, val dy: Float)
 
 /** O que o adversário faz quando o golpe encosta: entra em [stateNo] no tick [startTick] do atacante. */
-class TargetPlan(val startTick: Int, val stateNo: Int, val steps: List<AnimStep>)
+class TargetPlan(
+    val startTick: Int,
+    val stateNo: Int,
+    val steps: List<AnimStep>,
+    /** Outros estados que o atacante também manda no mesmo tick (ordens para helpers diferentes, por exemplo): vale o último. */
+    val alternatives: List<Int> = emptyList(),
+)
 
 class MovePlan(
     val stateNo: Int,
@@ -18,6 +24,11 @@ class MovePlan(
     val totalTicks: Int,
     val target: TargetPlan?,
     val binds: List<Bind>,
+    /**
+     * Todas as vezes que o atacante manda o alvo para outro estado durante o golpe, em ordem de tick.
+     * Um golpe encadeado (agarrão com várias etapas) troca o estado do alvo a cada etapa; [target] é só o primeiro.
+     */
+    val targets: List<TargetPlan> = listOfNotNull(target),
 ) {
     /** Todas as animações que o plano usa (para carregar os sprites antes de tocar). */
     fun animsUsed(owner: Boolean): Set<Int> {
@@ -35,6 +46,11 @@ class PlanOptions(
     val holdInfinite: Int = 60,
     /** O estado roda dentro de um Helper (ishelper = 1). */
     val asHelper: Boolean = false,
+    /**
+     * Planeja só o estado pedido: não segue os ChangeState para as etapas seguintes. A animação do estado toca até o fim
+     * e o alvo vai para o(s) estado(s) que este estado manda (TargetState/HitDef dele), não os das etapas seguintes.
+     */
+    val singleState: Boolean = false,
 )
 
 /**
@@ -50,14 +66,23 @@ object MovePlanner {
         if (book.states[stateNo] == null) return null
         val run = Runner(book, anims, opts, asTarget = false, start = stateNo).run()
 
-        // primeiro contato do atacante com o alvo: TargetState ou HitDef com p2stateno
-        val first = run.hits.minByOrNull { it.tick }
-        var target: TargetPlan? = null
-        if (first != null && book.states[first.stateNo] != null) {
-            val t = Runner(book, anims, opts, asTarget = true, start = first.stateNo).run()
-            target = TargetPlan(first.tick, first.stateNo, t.steps)
+        // cada TargetState / HitDef com p2stateno do atacante põe o alvo em um estado; se vários caem no mesmo tick, vale o último
+        val byTick = LinkedHashMap<Int, Hit>()
+        val sameTick = HashMap<Int, LinkedHashSet<Int>>()
+        for (h in run.hits.sortedBy { it.tick }) if (book.states[h.stateNo] != null) {
+            byTick[h.tick] = h
+            sameTick.getOrPut(h.tick) { LinkedHashSet() }.add(h.stateNo)
         }
-        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds)
+        val phases = ArrayList<TargetPlan>()
+        var prevState = -1
+        for (h in byTick.values) {
+            if (h.stateNo == prevState) continue // repetir o mesmo estado não é uma etapa nova
+            val t = Runner(book, anims, opts, asTarget = true, start = h.stateNo).run()
+            phases.add(TargetPlan(h.tick, h.stateNo, t.steps, sameTick[h.tick].orEmpty().filter { it != h.stateNo }))
+            prevState = h.stateNo
+        }
+        val target = phases.firstOrNull()
+        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds, phases)
     }
 
     private const val MAX_STATE_CHANGES = 12
@@ -107,10 +132,12 @@ object MovePlanner {
 
             outer@ while (g < opts.maxTicks) {
                 var changes = 0
+                var leaving = false
                 while (true) {
                     val def = book.states[state] ?: break@outer
                     var changed = false
                     for (c in def.controllers) {
+                        if (leaving && (c.type == "changestate" || c.type == "selfstate")) continue
                         when (c.type) {
                             "changeanim", "changeanim2" -> {
                                 if (c.type == "changeanim2" && !asTarget) continue
@@ -122,6 +149,10 @@ object MovePlanner {
                                 if (!fires(c, optimistic = false)) continue
                                 val v = intParam(c, "value") ?: continue
                                 if (v == state) continue
+                                if (opts.singleState) {
+                                    leaving = true // sai deste estado, mas o resto do tick dele ainda vale
+                                    continue
+                                }
                                 // voltou para um estado comum de movimento: o golpe terminou
                                 if ((v in 0..199 && v != start) || book.states[v] == null) {
                                     endTick = g + 1
@@ -157,6 +188,17 @@ object MovePlanner {
                     if (!changed) break
                     if (++changes > 8) break
                 }
+                if (leaving) {
+                    // a animação do estado toca até o fim natural, mesmo que a troca de estado já tenha disparado
+                    val a = anims(anim)
+                    val natural = when {
+                        a == null -> NO_ANIM_TICKS
+                        a.infinite -> a.totalTicks + opts.holdInfinite
+                        else -> a.totalTicks
+                    }
+                    endTick = maxOf(g + 1, animStart + natural)
+                    break@outer
+                }
 
                 // estado que nunca definiu animação: não há o que mostrar
                 if (anim < 0 && g >= NO_ANIM_TICKS) {
@@ -172,7 +214,7 @@ object MovePlanner {
                     else -> elapsed >= a.totalTicks - 1
                 }
                 if (animDone && stateTime >= horizon(state)) {
-                    val next = if (visited.size < MAX_STATE_CHANGES) optimisticExit() else null
+                    val next = if (!opts.singleState && visited.size < MAX_STATE_CHANGES) optimisticExit() else null
                     if (next != null) {
                         enter(next)
                         continue@outer

@@ -67,6 +67,7 @@ import com.ikemenselect.core.Blend
 import com.ikemenselect.core.Placement
 import com.ikemenselect.core.RectF
 import com.ikemenselect.core.SpriteRect
+import com.ikemenselect.core.TargetPlan
 import com.ikemenselect.viewer.CachedSprite
 import com.ikemenselect.viewer.CharOption
 import com.ikemenselect.viewer.LoadedChar
@@ -98,6 +99,8 @@ private class Play(
     val attacker: Int = 0,
     val binds: List<Bind> = emptyList(),
     val bindEnd: Float = 0f,
+    /** Etapas do alvo em golpes encadeados: a cada uma o atacante manda o alvo para outro estado (substitui [steps]). */
+    val phases: List<TargetPlan> = emptyList(),
 )
 
 private val IdlePlay = Play(emptyList(), 0f)
@@ -115,18 +118,36 @@ private fun playTime(play: Play, clock: Float): Int {
 
 private fun resolve(c: LoadedChar, id: Int, play: Play, clock: Float): Shown? {
     val idle = c.anims[0] ?: c.anims.values.firstOrNull() ?: return null
-    val t = playTime(play, clock) - play.delay
-    if (t < 0 || play.steps.isEmpty()) return Shown(idle, clock.toInt(), true, id, c)
+    val raw = playTime(play, clock)
+    var steps = play.steps
+    var t = raw - play.delay
+    var lastPhase = true
+    if (play.phases.isNotEmpty()) {
+        // a etapa de agora é a última que já começou; cada uma conta o tempo a partir do próprio início
+        val i = play.phases.indexOfLast { it.startTick <= raw }
+        if (i < 0) {
+            t = -1
+        } else {
+            steps = play.phases[i].steps
+            t = raw - play.phases[i].startTick
+            lastPhase = i == play.phases.lastIndex
+        }
+    }
+    if (t < 0 || steps.isEmpty()) return Shown(idle, clock.toInt(), true, id, c)
     var acc = t
-    for (s in play.steps) {
+    var lastShown: Shown? = null
+    for (s in steps) {
         val useOwner = s.useOwner && play.ownerChar != null
         val ch = if (useOwner) play.ownerChar!! else c
         val a = ch.anims[s.anim] ?: continue
         val dur = if (s.ticks >= 0) s.ticks else naturalLen(a)
         if (acc < dur) return Shown(a, acc, false, if (useOwner) play.ownerId else id, ch)
         acc -= dur
+        lastShown = Shown(a, naturalLen(a) + 1000, false, if (useOwner) play.ownerId else id, ch) // último quadro
     }
-    return Shown(idle, acc, true, id, c) // terminou: volta ao parado
+    // terminou: numa etapa do meio do golpe fica no último quadro (a próxima etapa ainda vai chegar); no fim volta ao parado
+    if (!lastPhase && lastShown != null) return lastShown
+    return Shown(idle, acc, true, id, c)
 }
 
 /** Posição do alvo preso ao atacante (TargetBind), ou null se não está preso agora. */
@@ -162,7 +183,9 @@ private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
     catalog.map { e ->
         val cmds = e.commands.take(2).joinToString("/")
         val label = listOfNotNull(cmds.ifEmpty { null }, "${e.stateNo}", AnimNames.exact(e.stateNo)).joinToString(" · ")
-        BtnItem(e.stateNo, label, if (e.helper) "Helpers" else AnimNames.group(e.stateNo))
+        // cada estado é um botão (como antes); e.internal marca as etapas de outro golpe, para uma lista futura
+        val group = if (e.helper) "Helpers" else AnimNames.group(e.stateNo)
+        BtnItem(e.stateNo, label, group)
     }
 
 private fun buildAnims(c: LoadedChar): List<BtnItem> =
@@ -352,7 +375,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                             val tgtAnims = LinkedHashSet<Animation>()
                             for (st in plan.steps) c.anims[st.anim]?.let { atkAnims.add(it) }
                             if (tp != null && other != null) {
-                                for (st in tp.steps) {
+                                for (ph in plan.targets) for (st in ph.steps) {
                                     if (st.useOwner) c.anims[st.anim]?.let { atkAnims.add(it) }
                                     else other.anims[st.anim]?.let { tgtAnims.add(it) }
                                 }
@@ -367,11 +390,25 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                                 Play(
                                     tp.steps, start, delay = tp.startTick, repeat = loopMove, period = period,
                                     ownerChar = c, ownerId = atkId, attacker = atkId,
-                                    binds = plan.binds, bindEnd = start + period,
+                                    binds = plan.binds, bindEnd = start + period, phases = plan.targets,
                                 )
                             } else IdlePlay
                             if (atkId == Owner.P1) { play1 = atkPlay; play2 = tgtPlay } else { play2 = atkPlay; play1 = tgtPlay }
-                            if (tp != null) note = "O adversário reage: estado ${tp.stateNo}."
+                            // o que a pessoa precisa saber quando a tela parece não fazer nada
+                            val visible = plan.steps.any { st ->
+                                c.anims[st.anim]?.frames?.any { f -> viewer.sprite(atkId, f.group, f.image) != null } == true
+                            }
+                            val parts = ArrayList<String>()
+                            if (!visible) parts += "Estado de controle: a animação ${plan.steps.first().anim} não tem sprite visível, por isso o personagem some."
+                            if (tp != null) {
+                                parts += if (plan.targets.size > 1) "O adversário passa pelos estados ${plan.targets.joinToString(", ") { it.stateNo.toString() }}."
+                                else "O adversário reage: estado ${tp.stateNo}."
+                                val alt = plan.targets.flatMap { it.alternatives }.distinct()
+                                if (alt.isNotEmpty()) parts += "O arquivo também manda ${alt.joinToString(", ")} (cada ordem vale para um helper diferente)."
+                            } else if (other != null) {
+                                parts += "Este estado, sozinho, não manda o adversário para nenhum estado."
+                            }
+                            note = parts.joinToString(" ").ifEmpty { null }
                         }
                     },
                 )

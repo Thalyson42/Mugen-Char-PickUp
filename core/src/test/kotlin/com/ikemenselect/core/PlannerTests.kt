@@ -459,4 +459,155 @@ class PlannerTests {
         assertTrue(list.first { it.stateNo == 800 }.helper)
         assertEquals(800, list.first { it.stateNo == 800 }.plan.steps.first().anim)
     }
+
+    @Test
+    fun catalogMarksStepsOfACommandMoveAsInternal() {
+        val b = book(
+            """
+            [Command]
+            name = "fb"
+            command = ~D, F, x
+            [Statedef -1]
+            [State -1, fb]
+            type = ChangeState
+            triggerall = command = "fb"
+            trigger1 = ctrl
+            value = 1000
+            [Statedef 1000]
+            anim = 200
+            [State 1000, next]
+            type = ChangeState
+            trigger1 = var(3) = 1
+            value = 1001
+            [Statedef 1001]
+            anim = 201
+            [State 1001, next]
+            type = ChangeState
+            trigger1 = var(4) = 1
+            value = 1002
+            [State 1001, grab]
+            type = TargetState
+            trigger1 = var(4) = 2
+            value = 1500
+            [Statedef 1002]
+            anim = 210
+            [Statedef 1500]
+            anim = 300
+            [Statedef 2000]
+            anim = 800
+            [State 1000, h]
+            type = Helper
+            trigger1 = time = 3
+            stateno = 3000
+            [Statedef 3000]
+            anim = 800
+            """,
+        )
+        val c = MoveCatalog.continuationStates(b)
+        assertEquals(setOf(3000, 1001, 1002, 1500), c) // o helper do golpe 1000 também é etapa dele
+        val list = MoveCatalog.build(b) { animMap[it] }
+        assertEquals(false, list.first { it.stateNo == 1000 }.internal)
+        assertEquals(true, list.first { it.stateNo == 1001 }.internal)
+        assertEquals(false, list.first { it.stateNo == 2000 }.internal) // sem ligação com golpe nenhum: continua na lista
+    }
+
+    @Test
+    fun planKeepsEveryTargetStateOfAChainedGrab() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 400
+            [State 300, n]
+            type = ChangeState
+            trigger1 = animtime = 0
+            value = 301
+            [Statedef 301]
+            anim = 201
+            [State 301, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        val plan = plan(b, 300)!!
+        assertEquals(listOf(400, 401), plan.targets.map { it.stateNo })
+        assertTrue(plan.targets[1].startTick > plan.targets[0].startTick)
+        assertEquals(400, plan.target!!.stateNo) // compatível: o primeiro
+        assertEquals(800, plan.targets[1].steps.first().anim)
+    }
+
+    @Test
+    fun singleStateModePlansOnlyThatStateAndItsOwnTarget() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 400
+            [State 300, n]
+            type = ChangeState
+            trigger1 = time = 2
+            value = 301
+            [Statedef 301]
+            anim = 201
+            [State 301, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        val one = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(listOf(300), one.states)
+        assertEquals(listOf(400), one.targets.map { it.stateNo })
+        assertEquals(10, one.totalTicks) // a animação 200 (10 ticks) toca inteira mesmo com a troca em time = 2
+        val second = MovePlanner.plan(b, 301, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(listOf(401), second.targets.map { it.stateNo })
+        // no catálogo isolado, 301 tem o próprio botão
+        val list = MoveCatalog.build(b, isolated = true) { animMap[it] }
+        assertTrue(list.any { it.stateNo == 301 })
+    }
+
+    @Test
+    fun helperOnlyOrdersFireWhenPlannedAsHelperAndKeepAlternatives() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, a]
+            type = TargetState
+            trigger1 = ishelper(3000)
+            trigger2 = ishelper(3001)
+            value = 400
+            [State 300, b]
+            type = TargetState
+            trigger1 = ishelper(4000)
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        val plain = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(emptyList(), plain.targets.map { it.stateNo }) // como personagem comum, nada dispara
+        val list = MoveCatalog.build(b, isolated = true) { animMap[it] }
+        val e = list.first { it.stateNo == 300 }
+        assertTrue(e.helper) // o catálogo percebe o ishelper nos gatilhos
+        assertEquals(listOf(401), e.plan.targets.map { it.stateNo })
+        assertEquals(listOf(400), e.plan.targets[0].alternatives)
+    }
 }
