@@ -18,6 +18,11 @@ class MovePlan(
     val totalTicks: Int,
     val target: TargetPlan?,
     val binds: List<Bind>,
+    /**
+     * Todas as vezes que o atacante manda o alvo para outro estado durante o golpe, em ordem de tick.
+     * Um golpe encadeado (agarrão com várias etapas) troca o estado do alvo a cada etapa; [target] é só o primeiro.
+     */
+    val targets: List<TargetPlan> = listOfNotNull(target),
 ) {
     /** Todas as animações que o plano usa (para carregar os sprites antes de tocar). */
     fun animsUsed(owner: Boolean): Set<Int> {
@@ -50,14 +55,19 @@ object MovePlanner {
         if (book.states[stateNo] == null) return null
         val run = Runner(book, anims, opts, asTarget = false, start = stateNo).run()
 
-        // primeiro contato do atacante com o alvo: TargetState ou HitDef com p2stateno
-        val first = run.hits.minByOrNull { it.tick }
-        var target: TargetPlan? = null
-        if (first != null && book.states[first.stateNo] != null) {
-            val t = Runner(book, anims, opts, asTarget = true, start = first.stateNo).run()
-            target = TargetPlan(first.tick, first.stateNo, t.steps)
+        // cada TargetState / HitDef com p2stateno do atacante põe o alvo em um estado; se vários caem no mesmo tick, vale o último
+        val byTick = LinkedHashMap<Int, Hit>()
+        for (h in run.hits.sortedBy { it.tick }) if (book.states[h.stateNo] != null) byTick[h.tick] = h
+        val phases = ArrayList<TargetPlan>()
+        var prevState = -1
+        for (h in byTick.values) {
+            if (h.stateNo == prevState) continue // repetir o mesmo estado não é uma etapa nova
+            val t = Runner(book, anims, opts, asTarget = true, start = h.stateNo).run()
+            phases.add(TargetPlan(h.tick, h.stateNo, t.steps))
+            prevState = h.stateNo
         }
-        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds)
+        val target = phases.firstOrNull()
+        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds, phases)
     }
 
     private const val MAX_STATE_CHANGES = 12

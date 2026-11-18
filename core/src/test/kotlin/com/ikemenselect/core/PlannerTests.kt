@@ -510,4 +510,37 @@ class PlannerTests {
         assertEquals(true, list.first { it.stateNo == 1001 }.internal)
         assertEquals(false, list.first { it.stateNo == 2000 }.internal) // sem ligação com golpe nenhum: continua na lista
     }
+
+    @Test
+    fun planKeepsEveryTargetStateOfAChainedGrab() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 400
+            [State 300, n]
+            type = ChangeState
+            trigger1 = animtime = 0
+            value = 301
+            [Statedef 301]
+            anim = 201
+            [State 301, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        val plan = plan(b, 300)!!
+        assertEquals(listOf(400, 401), plan.targets.map { it.stateNo })
+        assertTrue(plan.targets[1].startTick > plan.targets[0].startTick)
+        assertEquals(400, plan.target!!.stateNo) // compatível: o primeiro
+        assertEquals(800, plan.targets[1].steps.first().anim)
+    }
 }
