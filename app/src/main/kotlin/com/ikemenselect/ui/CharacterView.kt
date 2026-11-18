@@ -1,6 +1,11 @@
 package com.ikemenselect.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.res.painterResource
+import com.ikemenselect.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -138,6 +143,19 @@ private fun boundPos(
     return (atkX + atkFacing * cur.dx * sx) to (ground + cur.dy * sy)
 }
 
+/** Imagem pequena no lugar do texto de um botão (fundo claro para aparecer também no tema escuro). */
+@Composable
+private fun ChipImage(res: Int, description: String) {
+    Image(
+        painter = painterResource(res),
+        contentDescription = description,
+        modifier = Modifier
+            .height(22.dp)
+            .background(Color.White, RoundedCornerShape(4.dp))
+            .padding(2.dp),
+    )
+}
+
 private class BtnItem(val id: Int, val label: String, val group: String)
 
 private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
@@ -245,7 +263,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                 Text("P2: " + (ui.p2?.name ?: "—"), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(onClick = { picker = 3 }, modifier = Modifier.weight(1f)) {
-                Text(stage?.option?.label ?: "Cenário", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stage?.option?.label ?: "Stage", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
 
@@ -254,12 +272,12 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChip(selected = paused, onClick = { paused = !paused }, label = { Text(if (paused) "▶ Continuar" else "⏸ Pausar") })
+            FilterChip(selected = paused, onClick = { paused = !paused }, label = { Text(if (paused) "▶" else "⏸") })
             FilterChip(selected = speed == 1f, onClick = { speed = 1f }, label = { Text("1×") })
             FilterChip(selected = speed == 0.5f, onClick = { speed = 0.5f }, label = { Text("½×") })
             FilterChip(selected = speed == 0.25f, onClick = { speed = 0.25f }, label = { Text("¼×") })
-            FilterChip(selected = loopMove, onClick = { loopMove = !loopMove }, label = { Text("Repetir golpe") })
-            FilterChip(selected = showBoxes, onClick = { showBoxes = !showBoxes }, label = { Text("Caixas") })
+            FilterChip(selected = loopMove, onClick = { loopMove = !loopMove }, label = { ChipImage(R.drawable.ic_repeat, "Repetir golpe") })
+            FilterChip(selected = showBoxes, onClick = { showBoxes = !showBoxes }, label = { ChipImage(R.drawable.ic_boxes, "Caixas") })
         }
 
         // de quem são os botões
@@ -267,8 +285,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChip(selected = active == Owner.P1, onClick = { active = Owner.P1 }, label = { Text("Golpes do P1") })
-            FilterChip(selected = active == Owner.P2, onClick = { active = Owner.P2 }, label = { Text("Golpes do P2") })
+            FilterChip(selected = active == Owner.P1, onClick = { active = Owner.P1 }, label = { Text("P1") })
+            FilterChip(selected = active == Owner.P2, onClick = { active = Owner.P2 }, label = { Text("P2") })
         }
 
         // quem ataca e quem sofre (o outro personagem)
@@ -281,7 +299,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChip(selected = listMode == 0, onClick = { listMode = 0 }, label = { Text("Golpes") })
+            FilterChip(selected = listMode == 0, onClick = { listMode = 0 }, label = { ChipImage(R.drawable.ic_moves, "Golpes") })
             FilterChip(selected = listMode == 1, onClick = { listMode = 1 }, label = { Text("Animações") })
         }
 
@@ -374,7 +392,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             onDismiss = { picker = 0 },
         )
         3 -> PickerDialog(
-            title = "Cenário",
+            title = "Stage",
             options = ui.stages.map { it.path to it.label },
             allowNone = true,
             onPick = { id ->
