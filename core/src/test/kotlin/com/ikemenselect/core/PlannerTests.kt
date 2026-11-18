@@ -459,4 +459,55 @@ class PlannerTests {
         assertTrue(list.first { it.stateNo == 800 }.helper)
         assertEquals(800, list.first { it.stateNo == 800 }.plan.steps.first().anim)
     }
+
+    @Test
+    fun catalogMarksStepsOfACommandMoveAsInternal() {
+        val b = book(
+            """
+            [Command]
+            name = "fb"
+            command = ~D, F, x
+            [Statedef -1]
+            [State -1, fb]
+            type = ChangeState
+            triggerall = command = "fb"
+            trigger1 = ctrl
+            value = 1000
+            [Statedef 1000]
+            anim = 200
+            [State 1000, next]
+            type = ChangeState
+            trigger1 = var(3) = 1
+            value = 1001
+            [Statedef 1001]
+            anim = 201
+            [State 1001, next]
+            type = ChangeState
+            trigger1 = var(4) = 1
+            value = 1002
+            [State 1001, grab]
+            type = TargetState
+            trigger1 = var(4) = 2
+            value = 1500
+            [Statedef 1002]
+            anim = 210
+            [Statedef 1500]
+            anim = 300
+            [Statedef 2000]
+            anim = 800
+            [State 1000, h]
+            type = Helper
+            trigger1 = time = 3
+            stateno = 3000
+            [Statedef 3000]
+            anim = 800
+            """,
+        )
+        val c = MoveCatalog.continuationStates(b)
+        assertEquals(setOf(3000, 1001, 1002, 1500), c) // o helper do golpe 1000 também é etapa dele
+        val list = MoveCatalog.build(b) { animMap[it] }
+        assertEquals(false, list.first { it.stateNo == 1000 }.internal)
+        assertEquals(true, list.first { it.stateNo == 1001 }.internal)
+        assertEquals(false, list.first { it.stateNo == 2000 }.internal) // sem ligação com golpe nenhum: continua na lista
+    }
 }

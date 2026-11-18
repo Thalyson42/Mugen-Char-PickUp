@@ -7,6 +7,11 @@ class CatalogEntry(
     val commands: List<String>,
     /** Estado iniciado por um Helper (agarrões de helper, projéteis...). */
     val helper: Boolean,
+    /**
+     * Etapa de outro golpe: algum golpe (com comando) ou helper chega nela por ChangeState/SelfState/TargetState.
+     * A tela guarda essas etapas fora da lista principal, porque o golpe que leva a elas já as toca em sequência.
+     */
+    val internal: Boolean = false,
 )
 
 /**
@@ -31,6 +36,7 @@ object MoveCatalog {
             }
         }
 
+        val continuations = continuationStates(book)
         val out = ArrayList<CatalogEntry>()
         val hidden = HashSet<Int>()
         for (no in book.states.keys.sorted()) {
@@ -41,11 +47,39 @@ object MoveCatalog {
                 def.controllers.any { c -> (c.type == "changestate" || c.type == "changeanim") && c.param("value")?.contains("ishelper", true) == true }
             val plan = MovePlanner.plan(book, no, anims, PlanOptions(asHelper = isHelper)) ?: continue
             if (plan.steps.none { anims(it.anim) != null }) continue
-            out += CatalogEntry(no, plan, commands[no].orEmpty(), isHelper)
+            out += CatalogEntry(no, plan, commands[no].orEmpty(), isHelper, internal = no in continuations)
             for (v in plan.states) {
                 if (v > no && v !in book.helperStates && !commands.containsKey(v)) hidden.add(v)
             }
         }
         return out
+    }
+
+    /**
+     * Estados (de 200 em diante) que só aparecem como etapa de outro golpe. Parte dos golpes com comando e dos helpers
+     * e segue qualquer número que apareça no `value` de um ChangeState/SelfState/TargetState, mesmo quando a condição
+     * não dá para avaliar sem o jogo rodando (variáveis, por exemplo).
+     */
+    fun continuationStates(book: StateBook): Set<Int> {
+        val commanded = HashSet<Int>(book.commandsByState.keys)
+        // um helper é criado por um golpe (projétil, parceiro...): o estado dele é etapa desse golpe, não um golpe à parte
+        val reached = LinkedHashSet<Int>(book.helperStates.filter { it !in commanded && book.states.containsKey(it) })
+        val seen = HashSet<Int>(commanded).also { it.addAll(book.helperStates) }
+        val queue = ArrayDeque<Int>(seen)
+        val number = Regex("""\d+""")
+        while (queue.isNotEmpty()) {
+            val st = book.states[queue.removeFirst()] ?: continue
+            for (c in st.controllers) {
+                if (c.type != "changestate" && c.type != "selfstate" && c.type != "targetstate") continue
+                val raw = c.param("value") ?: continue
+                for (m in number.findAll(raw)) {
+                    val v = m.value.toIntOrNull() ?: continue
+                    if (v < 200 || v >= 5000 || !book.states.containsKey(v)) continue
+                    if (seen.add(v)) queue.addLast(v)
+                    if (v !in commanded) reached.add(v)
+                }
+            }
+        }
+        return reached
     }
 }
