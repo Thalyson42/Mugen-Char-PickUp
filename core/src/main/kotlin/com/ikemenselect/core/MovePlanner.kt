@@ -6,6 +6,12 @@ class AnimStep(val anim: Int, val ticks: Int, val useOwner: Boolean)
 /** Prende o alvo ao atacante: de [start] por [ticks] ticks, em ([dx], [dy]) à frente/abaixo da origem do atacante. */
 class Bind(val start: Int, val ticks: Int, val dx: Float, val dy: Float)
 
+/** Referência a um som: [common] = fight.snd do jogo (prefixo F); senão o .snd do personagem dono do estado (prefixo S). */
+data class SndRef(val common: Boolean, val group: Int, val number: Int)
+
+/** Som que toca no tick [tick] do golpe. */
+class SoundEvent(val tick: Int, val ref: SndRef)
+
 /** O que o adversário faz quando o golpe encosta: entra em [stateNo] no tick [startTick] do atacante. */
 class TargetPlan(
     val startTick: Int,
@@ -13,6 +19,8 @@ class TargetPlan(
     val steps: List<AnimStep>,
     /** Outros estados que o atacante também manda no mesmo tick (ordens para helpers diferentes, por exemplo): vale o último. */
     val alternatives: List<Int> = emptyList(),
+    /** Sons do estado do alvo, em ticks do próprio alvo (começam em 0). O .snd "próprio" é o do alvo. */
+    val sounds: List<SoundEvent> = emptyList(),
 )
 
 class MovePlan(
@@ -29,6 +37,8 @@ class MovePlan(
      * Um golpe encadeado (agarrão com várias etapas) troca o estado do alvo a cada etapa; [target] é só o primeiro.
      */
     val targets: List<TargetPlan> = listOfNotNull(target),
+    /** Sons do atacante (PlaySnd e o hitsound do HitDef quando acerta), em ticks do golpe. */
+    val sounds: List<SoundEvent> = emptyList(),
 ) {
     /** Todas as animações que o plano usa (para carregar os sprites antes de tocar). */
     fun animsUsed(owner: Boolean): Set<Int> {
@@ -78,11 +88,11 @@ object MovePlanner {
         for (h in byTick.values) {
             if (h.stateNo == prevState) continue // repetir o mesmo estado não é uma etapa nova
             val t = Runner(book, anims, opts, asTarget = true, start = h.stateNo).run()
-            phases.add(TargetPlan(h.tick, h.stateNo, t.steps, sameTick[h.tick].orEmpty().filter { it != h.stateNo }))
+            phases.add(TargetPlan(h.tick, h.stateNo, t.steps, sameTick[h.tick].orEmpty().filter { it != h.stateNo }, t.sounds.distinctBy { it.tick to it.ref }))
             prevState = h.stateNo
         }
         val target = phases.firstOrNull()
-        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds, phases)
+        return MovePlan(stateNo, run.states, run.steps, run.totalTicks, target, run.binds, phases, run.sounds.distinctBy { it.tick to it.ref })
     }
 
     private const val MAX_STATE_CHANGES = 12
@@ -99,6 +109,7 @@ object MovePlanner {
         val totalTicks: Int,
         val hits: List<Hit>,
         val binds: List<Bind>,
+        val sounds: List<SoundEvent>,
     )
 
     private class Runner(
@@ -123,6 +134,9 @@ object MovePlanner {
         val hits = ArrayList<Hit>()
         val binds = ArrayList<Bind>()
         val firedOnce = HashSet<Controller>()
+        val sounds = ArrayList<SoundEvent>()
+        /** PlaySnd já disparados neste estado (um PlaySnd com gatilho sempre verdadeiro tocaria a cada tick). */
+        val soundDone = HashSet<Controller>()
 
         fun run(): RunResult {
             val def0 = book.states[start]
@@ -165,6 +179,10 @@ object MovePlanner {
                                 enter(v)
                                 changed = true
                             }
+                            "playsnd" -> if (!soundDone.contains(c) && fires(c, optimistic = false)) {
+                                soundDone.add(c)
+                                parseSnd(c.param("value"), commonByDefault = false)?.let { sounds.add(SoundEvent(g, it)) }
+                            }
                             "targetstate" -> if (!asTarget && firedOnce.add(c) ) {
                                 if (fires(c, optimistic = true)) {
                                     intParam(c, "value")?.let { hits.add(Hit(g, it)) }
@@ -173,6 +191,8 @@ object MovePlanner {
                             "hitdef" -> if (!asTarget && firedOnce.add(c)) {
                                 if (fires(c, optimistic = true)) {
                                     intParam(c, "p2stateno")?.let { hits.add(Hit(g + 1, it)) }
+                                    // som de quando acerta: só existe contato se há um adversário
+                                    if (opts.assumeHit) parseSnd(c.param("hitsound"), commonByDefault = true)?.let { sounds.add(SoundEvent(g + 1, it)) }
                                 } else firedOnce.remove(c)
                             }
                             "targetbind" -> if (!asTarget && fires(c, optimistic = true)) {
@@ -227,15 +247,44 @@ object MovePlanner {
             }
             val total = if (endTick >= 0) endTick else g
             closeStep(total, natural = endTick >= 0)
-            return RunResult(steps, visited, total, hits, binds)
+            return RunResult(steps, visited, total, hits, binds, sounds)
         }
 
         private fun enter(v: Int) {
             prevState = state
             state = v
             stateTime = 0
+            soundDone.clear()
             visited.add(v)
             startAnim(book.states[v])?.let { if (it != anim || animOwner) setAnim(it, false) }
+        }
+
+        /** "F7, 0" / "S1,4" / "5, 0": prefixo F = som comum, S = do personagem; sem prefixo vale [commonByDefault]. */
+        private fun parseSnd(raw: String?, commonByDefault: Boolean): SndRef? {
+            var t = raw?.trim() ?: return null
+            if (t.isEmpty()) return null
+            var common = commonByDefault
+            if (t.length > 1 && t[0].lowercaseChar() in "fs" && (t[1].isDigit() || t[1] == '(')) {
+                common = t[0].lowercaseChar() == 'f'
+                t = t.substring(1)
+            }
+            val parts = splitTop(t)
+            if (parts.size < 2) return null
+            val g = (Expr.eval(parts[0], this) as? Double)?.toInt() ?: return null
+            val n = (Expr.eval(parts[1], this) as? Double)?.toInt() ?: return null
+            if (g < 0 || n < 0) return null // -1 = sem som
+            return SndRef(common, g, n)
+        }
+
+        private fun splitTop(t: String): List<String> {
+            val out = ArrayList<String>()
+            var depth = 0
+            var from = 0
+            for ((i, ch) in t.withIndex()) {
+                if (ch == '(') depth++ else if (ch == ')') depth-- else if (ch == ',' && depth == 0) { out.add(t.substring(from, i)); from = i + 1 }
+            }
+            out.add(t.substring(from))
+            return out
         }
 
         private fun startAnim(def: StateDef?): Int? {
@@ -348,6 +397,7 @@ object MovePlanner {
                     if (cur == null || n == null || n < 1 || n > cur.frames.size) null
                     else (elapsed - cur.frameStart(n - 1)).toDouble()
                 }
+                "random" -> 0.0
                 "alive" -> 1.0
                 "roundstate" -> 2.0
                 "numenemy" -> 1.0

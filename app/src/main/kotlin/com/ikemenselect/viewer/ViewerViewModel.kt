@@ -18,7 +18,10 @@ import com.ikemenselect.core.MoveCatalog
 import com.ikemenselect.core.MovePlanner
 import com.ikemenselect.core.PlanOptions
 import com.ikemenselect.core.StateBook
+import com.ikemenselect.core.Pcm
 import com.ikemenselect.core.SffFile
+import com.ikemenselect.core.SndFile
+import com.ikemenselect.core.SndRef
 import com.ikemenselect.core.SffReader
 import com.ikemenselect.core.SpriteInfo
 import com.ikemenselect.core.StageDef
@@ -58,6 +61,10 @@ class LoadedChar(
 
     /** Lista de golpes já planejada (com as continuações juntas); null enquanto está sendo calculada. */
     @Volatile var catalog: List<CatalogEntry>? = null
+
+    /** .snd do personagem, aberto na primeira vez que um som é pedido. */
+    @Volatile var snd: SndFile? = null
+    @Volatile var sndTried = false
 }
 
 class LoadedStage(
@@ -152,6 +159,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
                 clearOwner(owner)
                 val old = if (owner == Owner.P1) _ui.value.p1 else _ui.value.p2
                 runCatching { old?.sff?.close() }
+                runCatching { old?.snd?.close() }
                 _ui.update {
                     val n = if (owner == Owner.P1) it.copy(p1 = loaded) else it.copy(p2 = loaded)
                     n.copy(busy = false, version = it.version + 1)
@@ -281,6 +289,79 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit, asHelper = helper, singleState = true))
         }
 
+    // ---------------------------------------------------------------- sons
+
+    private val sounds = SoundPlayer()
+    private val pcmCache = ConcurrentHashMap<Long, Pcm>()
+    private var commonSnd: SndFile? = null
+    private var commonTried = false
+
+    private fun pcmKey(owner: Int, group: Int, number: Int): Long =
+        (owner.toLong() shl 48) or ((group.toLong() and 0xFFFFFF) shl 24) or (number.toLong() and 0xFFFFFF)
+
+    private fun openSnd(tree: SafTree, paths: List<String>): SndFile? {
+        for (path in paths) {
+            val node = tree.resolveNode(path, cached = true)?.takeIf { !it.isDir } ?: continue
+            return try {
+                tree.openSource(node.id)?.let { SndFile.open(it) }
+            } catch (e: Throwable) {
+                null
+            }
+        }
+        return null
+    }
+
+    private fun ownSnd(c: LoadedChar): SndFile? = synchronized(c) {
+        if (!c.sndTried) {
+            c.sndTried = true
+            val tree = source?.tree
+            val name = c.files["sound"]
+            if (tree != null && name != null) c.snd = openSnd(tree, listOf("${c.dir}/$name", "data/$name"))
+        }
+        c.snd
+    }
+
+    /** Sons comuns do jogo (prefixo F: golpes que acertam, quedas...). Opcional: se não achar, esses ficam mudos. */
+    private fun commonSound(): SndFile? = synchronized(this) {
+        if (!commonTried) {
+            commonTried = true
+            val tree = source?.tree
+            if (tree != null) {
+                commonSnd = openSnd(
+                    tree,
+                    listOf("data/fight.snd", "sound/fight.snd", "data/common.snd", "sound/common.snd", "data/ikemen1/fight.snd"),
+                )
+            }
+        }
+        commonSnd
+    }
+
+    /** Lê os sons que o golpe vai usar, para tocá-los na hora certa sem esperar o arquivo. */
+    suspend fun prepareSounds(ownerId: Int, c: LoadedChar, refs: Collection<SndRef>) {
+        withContext(Dispatchers.IO) {
+            if (pcmCache.values.sumOf { it.data.size.toLong() } > 64L * 1024 * 1024) pcmCache.clear()
+            for (r in refs.distinct()) {
+                val owner = if (r.common) 0 else ownerId
+                val k = pcmKey(owner, r.group, r.number)
+                if (pcmCache.containsKey(k)) continue
+                val file = if (r.common) commonSound() else ownSnd(c)
+                val pcm = try {
+                    file?.pcm(r.group, r.number)
+                } catch (e: Throwable) {
+                    null
+                }
+                if (pcm != null) pcmCache[k] = pcm
+            }
+        }
+    }
+
+    fun playSound(ownerId: Int, ref: SndRef) {
+        val pcm = pcmCache[pcmKey(if (ref.common) 0 else ownerId, ref.group, ref.number)] ?: return
+        sounds.play(pcm)
+    }
+
+    fun stopSounds() = sounds.stopAll()
+
     // ---------------------------------------------------------------- sprites
 
     /** Sprite já decodificado (sem I/O) ou null se ainda não carregou / não existe. */
@@ -350,6 +431,8 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun clearOwner(owner: Int) {
         val prefix = owner.toLong()
+        pcmCache.keys.removeAll { (it shr 48) == prefix }
+        sounds.stopAll()
         cache.keys.removeAll { (it shr 40) == prefix }
         missing.removeAll { (it shr 40) == prefix }
     }
@@ -359,6 +442,13 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { u.p1?.sff?.close() }
         runCatching { u.p2?.sff?.close() }
         runCatching { u.stage?.sff?.close() }
+        runCatching { u.p1?.snd?.close() }
+        runCatching { u.p2?.snd?.close() }
+        runCatching { commonSnd?.close() }
+        commonSnd = null
+        commonTried = false
+        pcmCache.clear()
+        sounds.stopAll()
         cache.clear()
         missing.clear()
     }

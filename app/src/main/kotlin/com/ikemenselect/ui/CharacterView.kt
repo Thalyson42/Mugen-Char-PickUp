@@ -62,6 +62,7 @@ import com.ikemenselect.core.AnimNames
 import com.ikemenselect.core.AnimStep
 import com.ikemenselect.core.Animation
 import com.ikemenselect.core.Bind
+import com.ikemenselect.core.SoundEvent
 import com.ikemenselect.core.CatalogEntry
 import com.ikemenselect.core.Blend
 import com.ikemenselect.core.Placement
@@ -104,6 +105,36 @@ private class Play(
 )
 
 private val IdlePlay = Play(emptyList(), 0f)
+
+/** Sons de um golpe de [ownerId]: tocam quando o relógio passa do tick de cada um (e de novo a cada volta, se repetir). */
+private class SoundPlay(
+    val events: List<SoundEvent>,
+    val ownerId: Int,
+    val start: Float,
+    val period: Int,
+    val repeat: Boolean,
+) {
+    var last = -1f // instante (relativo ao início) até onde já foi verificado
+}
+
+/** Toca os sons cujo tick passou desde a última verificação. */
+private fun fireSounds(viewer: ViewerViewModel, plays: List<SoundPlay>, clock: Float) {
+    for (sp in plays) {
+        val now = clock - sp.start
+        if (now < sp.last) continue
+        for (e in sp.events) {
+            val t = e.tick.toFloat()
+            if (!sp.repeat || sp.period <= 0) {
+                if (sp.last < t && t <= now) viewer.playSound(sp.ownerId, e.ref)
+            } else {
+                val first = Math.floor(((sp.last - t) / sp.period).toDouble()).toInt() + 1
+                val lastK = Math.floor(((now - t) / sp.period).toDouble()).toInt()
+                for (k in maxOf(first, 0)..lastK) viewer.playSound(sp.ownerId, e.ref)
+            }
+        }
+        sp.last = now
+    }
+}
 
 /** Animação a desenhar agora e de quem são os sprites e a escala. */
 private class Shown(val anim: Animation, val tick: Int, val loop: Boolean, val spriteOwner: Int, val c: LoadedChar)
@@ -213,6 +244,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
     var play2 by remember { mutableStateOf(IdlePlay) }
     var listMode by remember { mutableIntStateOf(0) } // 0 = golpes (estados), 1 = animações
     var note by remember { mutableStateOf<String?>(null) }
+    var soundOn by remember { mutableStateOf(true) }
+    val soundPlays = remember { ArrayList<SoundPlay>() }
     var picker by remember { mutableIntStateOf(0) } // 0 = fechado, 1 = P1, 2 = P2, 3 = cenário
     val scope = rememberCoroutineScope()
 
@@ -223,6 +256,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             val now = withFrameNanos { it }
             clock += (now - last) / 1_000_000_000f * 60f * speed
             last = now
+            if (soundOn && soundPlays.isNotEmpty()) fireSounds(viewer, soundPlays, clock)
         }
     }
     LaunchedEffect(note) {
@@ -300,6 +334,14 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
             FilterChip(selected = speed == 0.5f, onClick = { speed = 0.5f }, label = { Text("½×") })
             FilterChip(selected = speed == 0.25f, onClick = { speed = 0.25f }, label = { Text("¼×") })
             FilterChip(selected = loopMove, onClick = { loopMove = !loopMove }, label = { ChipImage(R.drawable.ic_repeat, "Repetir golpe") })
+            FilterChip(
+                selected = soundOn,
+                onClick = {
+                    soundOn = !soundOn
+                    if (!soundOn) viewer.stopSounds()
+                },
+                label = { Text(if (soundOn) "🔊" else "🔇") },
+            )
             FilterChip(selected = showBoxes, onClick = { showBoxes = !showBoxes }, label = { ChipImage(R.drawable.ic_boxes, "Caixas") })
         }
 
@@ -356,6 +398,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                     },
                     onClick = { id ->
                         note = null
+                        soundPlays.clear()
+                        viewer.stopSounds()
                         scope.launch {
                             val now = clock
                             if (listMode == 1) {
@@ -383,8 +427,19 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                             viewer.ensureAnims(atkId, c, atkAnims)
                             if (other != null && tgtAnims.isNotEmpty()) viewer.ensureAnims(tgtId, other, tgtAnims)
 
+                            // sons: os do atacante e os das reações do adversário (cada um com o .snd do seu dono)
+                            val tgtSounds = ArrayList<SoundEvent>()
+                            if (other != null) for (ph in plan.targets) for (e in ph.sounds) tgtSounds.add(SoundEvent(e.tick + ph.startTick, e.ref))
+                            if (soundOn) {
+                                viewer.prepareSounds(atkId, c, plan.sounds.map { it.ref })
+                                if (other != null && tgtSounds.isNotEmpty()) viewer.prepareSounds(tgtId, other, tgtSounds.map { it.ref })
+                            }
+
                             val start = clock
                             val period = plan.totalTicks.coerceAtLeast(1)
+                            soundPlays.clear()
+                            if (plan.sounds.isNotEmpty()) soundPlays.add(SoundPlay(plan.sounds, atkId, start, period, loopMove))
+                            if (tgtSounds.isNotEmpty()) soundPlays.add(SoundPlay(tgtSounds, tgtId, start, period, loopMove))
                             val atkPlay = Play(plan.steps, start, repeat = loopMove, period = period)
                             val tgtPlay = if (tp != null && other != null) {
                                 Play(
