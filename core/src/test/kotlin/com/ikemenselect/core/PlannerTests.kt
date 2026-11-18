@@ -580,4 +580,34 @@ class PlannerTests {
         val list = MoveCatalog.build(b, isolated = true) { animMap[it] }
         assertTrue(list.any { it.stateNo == 301 })
     }
+
+    @Test
+    fun helperOnlyOrdersFireWhenPlannedAsHelperAndKeepAlternatives() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, a]
+            type = TargetState
+            trigger1 = ishelper(3000)
+            trigger2 = ishelper(3001)
+            value = 400
+            [State 300, b]
+            type = TargetState
+            trigger1 = ishelper(4000)
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        val plain = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(emptyList(), plain.targets.map { it.stateNo }) // como personagem comum, nada dispara
+        val list = MoveCatalog.build(b, isolated = true) { animMap[it] }
+        val e = list.first { it.stateNo == 300 }
+        assertTrue(e.helper) // o catálogo percebe o ishelper nos gatilhos
+        assertEquals(listOf(401), e.plan.targets.map { it.stateNo })
+        assertEquals(listOf(400), e.plan.targets[0].alternatives)
+    }
 }

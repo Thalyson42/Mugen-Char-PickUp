@@ -7,7 +7,13 @@ class AnimStep(val anim: Int, val ticks: Int, val useOwner: Boolean)
 class Bind(val start: Int, val ticks: Int, val dx: Float, val dy: Float)
 
 /** O que o adversário faz quando o golpe encosta: entra em [stateNo] no tick [startTick] do atacante. */
-class TargetPlan(val startTick: Int, val stateNo: Int, val steps: List<AnimStep>)
+class TargetPlan(
+    val startTick: Int,
+    val stateNo: Int,
+    val steps: List<AnimStep>,
+    /** Outros estados que o atacante também manda no mesmo tick (ordens para helpers diferentes, por exemplo): vale o último. */
+    val alternatives: List<Int> = emptyList(),
+)
 
 class MovePlan(
     val stateNo: Int,
@@ -62,13 +68,17 @@ object MovePlanner {
 
         // cada TargetState / HitDef com p2stateno do atacante põe o alvo em um estado; se vários caem no mesmo tick, vale o último
         val byTick = LinkedHashMap<Int, Hit>()
-        for (h in run.hits.sortedBy { it.tick }) if (book.states[h.stateNo] != null) byTick[h.tick] = h
+        val sameTick = HashMap<Int, LinkedHashSet<Int>>()
+        for (h in run.hits.sortedBy { it.tick }) if (book.states[h.stateNo] != null) {
+            byTick[h.tick] = h
+            sameTick.getOrPut(h.tick) { LinkedHashSet() }.add(h.stateNo)
+        }
         val phases = ArrayList<TargetPlan>()
         var prevState = -1
         for (h in byTick.values) {
             if (h.stateNo == prevState) continue // repetir o mesmo estado não é uma etapa nova
             val t = Runner(book, anims, opts, asTarget = true, start = h.stateNo).run()
-            phases.add(TargetPlan(h.tick, h.stateNo, t.steps))
+            phases.add(TargetPlan(h.tick, h.stateNo, t.steps, sameTick[h.tick].orEmpty().filter { it != h.stateNo }))
             prevState = h.stateNo
         }
         val target = phases.firstOrNull()

@@ -376,10 +376,21 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?) {
                                 )
                             } else IdlePlay
                             if (atkId == Owner.P1) { play1 = atkPlay; play2 = tgtPlay } else { play2 = atkPlay; play1 = tgtPlay }
-                            if (tp != null) {
-                                note = if (plan.targets.size > 1) "O adversário passa pelos estados ${plan.targets.joinToString(", ") { it.stateNo.toString() }}."
-                                else "O adversário reage: estado ${tp.stateNo}."
+                            // o que a pessoa precisa saber quando a tela parece não fazer nada
+                            val visible = plan.steps.any { st ->
+                                c.anims[st.anim]?.frames?.any { f -> viewer.sprite(atkId, f.group, f.image) != null } == true
                             }
+                            val parts = ArrayList<String>()
+                            if (!visible) parts += "Estado de controle: a animação ${plan.steps.first().anim} não tem sprite visível, por isso o personagem some."
+                            if (tp != null) {
+                                parts += if (plan.targets.size > 1) "O adversário passa pelos estados ${plan.targets.joinToString(", ") { it.stateNo.toString() }}."
+                                else "O adversário reage: estado ${tp.stateNo}."
+                                val alt = plan.targets.flatMap { it.alternatives }.distinct()
+                                if (alt.isNotEmpty()) parts += "O arquivo também manda ${alt.joinToString(", ")} (cada ordem vale para um helper diferente)."
+                            } else if (other != null) {
+                                parts += "Este estado, sozinho, não manda o adversário para nenhum estado."
+                            }
+                            note = parts.joinToString(" ").ifEmpty { null }
                         }
                     },
                 )
