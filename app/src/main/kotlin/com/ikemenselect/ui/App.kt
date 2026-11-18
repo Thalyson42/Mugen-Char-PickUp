@@ -27,6 +27,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
@@ -58,6 +59,7 @@ fun App(
     var sizeDialog by remember { mutableStateOf(false) }
     // "home" = escolher o que fazer, "select" = Character Selection, "view" = Character View
     var screen by rememberSaveable { mutableStateOf("home") }
+    var viewerDialog by remember { mutableIntStateOf(0) } // Character View: 1 = Character select, 2 = Stage select
 
     BackHandler(enabled = s.ready && screen != "home") { screen = "home" }
     LaunchedEffect(s.ready, s.loading) { if (!s.ready && !s.loading) screen = "home" }
@@ -74,21 +76,32 @@ fun App(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("Mugen Char PickUp") },
+                title = { Text(if (s.ready && screen == "view") "Character View" else "Mugen Char PickUp") },
                 actions = {
                     if (s.hasFolder) {
                         Box {
                             TextButton(onClick = { menuOpen = true }) { Text("Menu") }
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("Trocar pasta do Ikemen GO") },
-                                    onClick = { menuOpen = false; onPickFolder() },
-                                )
-                                if (s.ready && screen != "home") {
+                                if (screen == "view" && s.ready) {
                                     DropdownMenuItem(
-                                        text = { Text("Voltar ao início") },
-                                        onClick = { menuOpen = false; screen = "home" },
+                                        text = { Text("Character select") },
+                                        onClick = { menuOpen = false; viewerDialog = 1 },
                                     )
+                                    DropdownMenuItem(
+                                        text = { Text("Stage select") },
+                                        onClick = { menuOpen = false; viewerDialog = 2 },
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text("Trocar pasta do Ikemen GO") },
+                                        onClick = { menuOpen = false; onPickFolder() },
+                                    )
+                                    if (s.ready && screen != "home") {
+                                        DropdownMenuItem(
+                                            text = { Text("Voltar ao início") },
+                                            onClick = { menuOpen = false; screen = "home" },
+                                        )
+                                    }
                                 }
                                 if (screen == "select") {
                                     DropdownMenuItem(
@@ -137,7 +150,7 @@ fun App(
                 )
             } else if (screen == "view") {
                 val source = remember { vm.viewerSource() }
-                CharacterView(viewer = viewer, source = source)
+                CharacterView(viewer = viewer, source = source, dialog = viewerDialog, onDialog = { viewerDialog = it })
             } else {
                 Column(Modifier.fillMaxSize()) {
                     Text(
