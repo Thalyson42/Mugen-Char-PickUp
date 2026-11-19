@@ -753,6 +753,32 @@ class PlannerTests {
     }
 
     @Test
+    fun p2FacingFromTheHitDefPassesAlongTheChain() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, h]
+            type = HitDef
+            trigger1 = 1
+            p2facing = 1
+            p2stateno = 400 ; comentário
+            [Statedef 400]
+            anim = 210
+            [State 400, c]
+            type = ChangeState
+            trigger1 = !animtime
+            value = 401
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        assertEquals(1, b.p2FacingByState[400])
+        assertEquals(1, b.p2FacingByState[401])
+        assertEquals(null, b.p2FacingByState[300])
+    }
+
+    @Test
     fun priorityOffsetAndImplicitBindFromTargetStates() {
         val b = book(
             """

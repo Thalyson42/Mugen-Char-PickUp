@@ -26,6 +26,8 @@ class TargetPlan(
     val offsetY: Float = 0f,
     /** Sons do estado do alvo, em ticks do próprio alvo (começam em 0). O .snd "próprio" é o do alvo. */
     val sounds: List<SoundEvent> = emptyList(),
+    /** `p2facing` do HitDef que manda o alvo para este estado: 1 = mesmo lado do atacante, -1 = virado para ele, 0 = não muda. */
+    val facing: Int = 0,
 )
 
 class MovePlan(
@@ -133,6 +135,7 @@ object MovePlanner {
                     offsetX = off?.param("x")?.trim()?.toFloatOrNull() ?: 0f,
                     offsetY = off?.param("y")?.trim()?.toFloatOrNull() ?: 0f,
                     sounds = t.sounds.distinctBy { it.tick to it.ref },
+                    facing = book.p2FacingByState[h.stateNo] ?: 0,
                 ),
             )
             prevState = h.stateNo

@@ -54,6 +54,37 @@ class StateBook(val states: Map<Int, StateDef>, val commandNames: Set<String>) {
         out
     }
 
+    /**
+     * Para onde o alvo fica virado em cada estado que um HitDef manda (`p2stateno`): `p2facing` = 1 vira para o mesmo lado
+     * do atacante, -1 para o atacante. O valor passa para os estados seguintes da cadeia (ChangeState/TargetState com número fixo).
+     */
+    val p2FacingByState: Map<Int, Int> by lazy {
+        val out = HashMap<Int, Int>()
+        // (estado, direção, é do atacante?): o atacante segue por p1stateno e manda o alvo adiante com TargetState
+        val queue = ArrayDeque<Triple<Int, Int, Boolean>>()
+        val seenAtk = HashSet<Int>()
+        for (st in states.values) for (c in st.controllers) {
+            if (c.type != "hitdef") continue
+            val f = c.param("p2facing")?.trim()?.toIntOrNull()?.takeIf { it != 0 } ?: continue
+            c.param("p2stateno")?.trim()?.toIntOrNull()?.let { if (out.putIfAbsent(it, f) == null) queue.addLast(Triple(it, f, false)) }
+            c.param("p1stateno")?.trim()?.toIntOrNull()?.let { if (seenAtk.add(it)) queue.addLast(Triple(it, f, true)) }
+        }
+        while (queue.isNotEmpty()) {
+            val (no, f, atk) = queue.removeFirst()
+            for (c in states[no]?.controllers.orEmpty()) {
+                val v = c.param("value")?.trim()?.toIntOrNull() ?: continue
+                if (v < 200 || v in 5000..5999 || !states.containsKey(v)) continue
+                when (c.type) {
+                    "changestate", "selfstate" ->
+                        if (atk) { if (seenAtk.add(v)) queue.addLast(Triple(v, f, true)) }
+                        else if (out.putIfAbsent(v, f) == null) queue.addLast(Triple(v, f, false))
+                    "targetstate" -> if (out.putIfAbsent(v, f) == null) queue.addLast(Triple(v, f, false))
+                }
+            }
+        }
+        out
+    }
+
     /** Estados dos Helpers e os que eles alcançam por ChangeState (só de 200 em diante, para não pegar o movimento comum). */
     val helperClosure: Set<Int> by lazy {
         val out = LinkedHashSet<Int>(helperStates)

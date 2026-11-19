@@ -710,14 +710,23 @@ private fun DrawScope.drawScene(
         val sy = Placement.charScale(stH, c.localCoordY, c.size.yscale)
         return (pos.first + facing * ph.offsetX * sx) to (pos.second + ph.offsetY * sy)
     }
-    val d1 = shifted(pos1, play1, ui.p1, 1)
-    val d2 = shifted(pos2, play2, ui.p2, -1)
+    // p2facing do HitDef: 1 = o alvo fica virado para o mesmo lado do atacante, -1 = virado para ele
+    fun targetFacing(play: Play, own: Int): Int {
+        val f = activePhase(play, clock)?.facing ?: 0
+        if (f == 0 || play.attacker == 0) return own
+        val atk = -own // o atacante olha para o lado oposto ao do alvo na posição inicial
+        return if (f > 0) atk else own
+    }
+    val face1 = targetFacing(play1, 1)
+    val face2 = targetFacing(play2, -1)
+    val d1 = shifted(pos1, play1, ui.p1, face1)
+    val d2 = shifted(pos2, play2, ui.p2, face2)
 
     // sprpriority: quem tem o maior valor fica por cima; empate mantém o P1 na frente
     val onTop2 = priorityOf(play2, clock) > priorityOf(play1, clock)
-    if (onTop2) drawChar(viewer, ui.p1, Owner.P1, play1, clock, d1.first, d1.second, 1, stW, stH, unit, showBoxes)
-    drawChar(viewer, ui.p2, Owner.P2, play2, clock, d2.first, d2.second, -1, stW, stH, unit, showBoxes)
-    if (!onTop2) drawChar(viewer, ui.p1, Owner.P1, play1, clock, d1.first, d1.second, 1, stW, stH, unit, showBoxes)
+    if (onTop2) drawChar(viewer, ui.p1, Owner.P1, play1, clock, d1.first, d1.second, face1, stW, stH, unit, showBoxes)
+    drawChar(viewer, ui.p2, Owner.P2, play2, clock, d2.first, d2.second, face2, stW, stH, unit, showBoxes)
+    if (!onTop2) drawChar(viewer, ui.p1, Owner.P1, play1, clock, d1.first, d1.second, face1, stW, stH, unit, showBoxes)
 
     if (stage != null) drawStageLayers(viewer, stage, clock, front = true, stW = stW, stH = stH, unit = unit)
 }
