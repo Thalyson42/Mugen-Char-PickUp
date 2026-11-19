@@ -88,6 +88,8 @@ class PlanOptions(
      * e o alvo vai para o(s) estado(s) que este estado manda (TargetState/HitDef dele), não os das etapas seguintes.
      */
     val singleState: Boolean = false,
+    /** Id do helper que roda o estado: `ishelper(N)` só vale quando N é este id. null = qualquer id vale. */
+    val helperId: Int? = null,
 )
 
 /**
@@ -444,7 +446,11 @@ object MovePlanner {
                 "alive" -> 1.0
                 "roundstate" -> 2.0
                 "numenemy" -> 1.0
-                "ishelper" -> if (opts.asHelper) 1.0 else 0.0
+                "ishelper" -> if (!opts.asHelper) 0.0 else {
+                    val want = opts.helperId
+                    val asked = (args?.getOrNull(0) as? Double)?.toInt()
+                    if (want == null || asked == null || asked == want) 1.0 else 0.0
+                }
                 "cond" -> {
                     val c = args?.getOrNull(0) as? Double
                     if (c == null) null else if (c != 0.0) args.getOrNull(1) else args.getOrNull(2)

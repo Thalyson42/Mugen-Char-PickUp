@@ -605,10 +605,12 @@ class PlannerTests {
         val plain = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
         assertEquals(emptyList(), plain.targets.map { it.stateNo }) // como personagem comum, nada dispara
         val list = MoveCatalog.build(b, isolated = true) { animMap[it] }
-        val e = list.first { it.stateNo == 300 }
-        assertTrue(e.helper) // o catálogo percebe o ishelper nos gatilhos
-        assertEquals(listOf(401), e.plan.targets.map { it.stateNo })
-        assertEquals(listOf(400), e.plan.targets[0].alternatives)
+        val es = list.filter { it.stateNo == 300 }
+        assertTrue(es.all { it.helper }) // o catálogo percebe o ishelper nos gatilhos
+        // um botão por caminho: os ids 3000/3001 levam ao 400 e o 4000 ao 401
+        assertEquals(listOf(3000, 4000), es.map { it.helperId })
+        assertEquals(listOf(400), es[0].plan.targets.map { it.stateNo })
+        assertEquals(listOf(401), es[1].plan.targets.map { it.stateNo })
     }
 
     @Test
@@ -636,6 +638,34 @@ class PlannerTests {
         assertEquals(0, plan.targets[0].startTick)
         assertEquals(0, plan.effectiveBinds.first().start)
         assertEquals(-5f, plan.effectiveBinds.first().dy)
+    }
+
+    @Test
+    fun ishelperIdSplitsTheMoveIntoOneVariantPerHelper() {
+        val b = book(
+            """
+            [Statedef 100]
+            [State 100, h1]
+            type = Helper
+            trigger1 = 1
+            name = "Yoka"
+            id = 3000
+            stateno = 300
+            [State 100, h2]
+            type = Helper
+            trigger1 = 1
+            name = "Flhote"
+            id = 4000
+            stateno = 300
+            [Statedef 300]
+            anim = cond(ishelper(3000), 200, 201)
+            """,
+        )
+        val es = MoveCatalog.build(b, isolated = true) { animMap[it] }.filter { it.stateNo == 300 }
+        assertEquals(listOf(3000, 4000), es.map { it.helperId })
+        assertEquals(listOf("Yoka", "Flhote"), es.map { it.variant })
+        assertEquals(200, es[0].plan.steps.first().anim)
+        assertEquals(201, es[1].plan.steps.first().anim)
     }
 
     @Test

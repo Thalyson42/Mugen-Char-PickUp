@@ -218,12 +218,12 @@ private fun ChipImage(res: Int, description: String, tint: Boolean = true) {
     )
 }
 
-private class BtnItem(val id: Int, val label: String, val group: String)
+private class BtnItem(val id: Int, val label: String, val group: String, val helperId: Int? = null)
 
 private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
     catalog.map { e ->
         val cmds = e.commands.take(2).joinToString("/")
-        val label = listOfNotNull(cmds.ifEmpty { null }, "${e.stateNo}", AnimNames.exact(e.stateNo)).joinToString(" · ")
+        val label = listOfNotNull(cmds.ifEmpty { null }, "${e.stateNo}", AnimNames.exact(e.stateNo), e.variant).joinToString(" · ")
         // cada estado é um botão (como antes); e.internal marca as etapas de outro golpe, para uma lista futura
         // estados de controle (anim 9999 e nenhum alvo com imagem) não mostram nada: ficam num grupo recolhido
         val invisible = e.plan.steps.all { it.anim == 9999 } &&
@@ -233,7 +233,7 @@ private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
             e.helper -> "Helpers"
             else -> AnimNames.group(e.stateNo)
         }
-        BtnItem(e.stateNo, label, group)
+        BtnItem(e.stateNo, label, group, e.helperId)
     }
 
 private fun buildAnims(c: LoadedChar): List<BtnItem> =
@@ -409,7 +409,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                     } else {
                         "Os nomes seguem a convenção comum do Mugen; cada personagem pode usar os números de outro jeito."
                     },
-                    onClick = { id ->
+                    onClick = { btn ->
+                        val id = btn.id
                         note = null
                         soundPlays.clear()
                         viewer.stopSounds()
@@ -422,7 +423,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                                 if (atkId == Owner.P1) play1 = p else play2 = p
                                 return@launch
                             }
-                            val plan = viewer.planMove(c, id, assumeHit = other != null)
+                            val plan = viewer.planMove(c, id, assumeHit = other != null, helperId = btn.helperId)
                             if (plan == null || plan.steps.isEmpty()) {
                                 note = "Esse estado não tem animação para mostrar."
                                 return@launch
@@ -523,7 +524,7 @@ private fun GroupedButtons(
     resetKey: Any,
     modifier: Modifier,
     footer: String,
-    onClick: (Int) -> Unit,
+    onClick: (BtnItem) -> Unit,
 ) {
     val groups = remember(items) { items.groupBy { it.group } }
     val expanded = remember(resetKey) { mutableStateMapOf<String, Boolean>() }
@@ -545,7 +546,7 @@ private fun GroupedButtons(
                 item(key = "b-$name") {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (m in list) {
-                            OutlinedButton(onClick = { onClick(m.id) }) { Text(m.label, maxLines = 1) }
+                            OutlinedButton(onClick = { onClick(m) }) { Text(m.label, maxLines = 1) }
                         }
                     }
                 }

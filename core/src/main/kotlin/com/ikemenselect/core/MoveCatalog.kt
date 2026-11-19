@@ -12,6 +12,9 @@ class CatalogEntry(
      * A tela guarda essas etapas fora da lista principal, porque o golpe que leva a elas já as toca em sequência.
      */
     val internal: Boolean = false,
+    /** Quando o mesmo estado tem caminhos diferentes por helper (ishelper(N)): o nome da variante e o id usado ao planejar. */
+    val variant: String? = null,
+    val helperId: Int? = null,
 )
 
 /**
@@ -36,6 +39,26 @@ object MoveCatalog {
             }
         }
 
+        // ids de helper que criam cada estado (Helper: id + stateno fixos) e o nome deles
+        val spawnIds = HashMap<Int, MutableSet<Int>>()
+        val helperNames = HashMap<Int, String>()
+        for (st in book.states.values) for (c in st.controllers) {
+            if (c.type != "helper") continue
+            val id = c.param("id")?.trim()?.toIntOrNull() ?: continue
+            val sn = c.param("stateno")?.trim()?.toIntOrNull()
+            if (sn != null) spawnIds.getOrPut(sn) { LinkedHashSet() }.add(id)
+            c.param("name")?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }?.let { helperNames.putIfAbsent(id, it) }
+        }
+        val isHelperRe = Regex("""ishelper\s*\(\s*(\d+)\s*\)""", RegexOption.IGNORE_CASE)
+        fun mentionedIds(def: StateDef): Set<Int> {
+            val ids = LinkedHashSet<Int>()
+            def.props.values.forEach { v -> isHelperRe.findAll(v).forEach { ids.add(it.groupValues[1].toInt()) } }
+            for (c in def.controllers) for ((_, v) in c.entries) isHelperRe.findAll(v).forEach { ids.add(it.groupValues[1].toInt()) }
+            return ids
+        }
+        fun signature(pl: MovePlan) =
+            pl.steps.map { it.anim to it.ticks } to pl.targets.map { t -> t.stateNo to t.steps.map { it.anim to it.useOwner } }
+
         val continuations = continuationStates(book)
         val out = ArrayList<CatalogEntry>()
         val hidden = HashSet<Int>()
@@ -50,7 +73,26 @@ object MoveCatalog {
                 def.controllers.any { c -> mentionsHelper(c) }
             val plan = MovePlanner.plan(book, no, anims, PlanOptions(asHelper = isHelper, singleState = isolated)) ?: continue
             if (plan.steps.none { anims(it.anim) != null }) continue
-            out += CatalogEntry(no, plan, commands[no].orEmpty(), isHelper, internal = no in continuations)
+            val ids = if (isHelper) (mentionedIds(def) + spawnIds[no].orEmpty()).sorted() else emptyList()
+            var added = false
+            if (ids.size >= 2) {
+                // um caminho por id de helper (ex.: Yoka e F.lhote); ids que dão o mesmo plano viram um botão só
+                val groups = LinkedHashMap<Any, MutableList<Pair<Int, MovePlan>>>()
+                for (id in ids) {
+                    val pl = MovePlanner.plan(book, no, anims, PlanOptions(asHelper = true, singleState = isolated, helperId = id)) ?: continue
+                    if (pl.steps.none { anims(it.anim) != null }) continue
+                    groups.getOrPut(signature(pl)) { ArrayList() }.add(id to pl)
+                }
+                if (groups.size >= 2) {
+                    for (g in groups.values) {
+                        val nm = g.map { helperNames[it.first] ?: "id ${it.first}" }.distinct()
+                        val label = nm.take(2).joinToString("/") + if (nm.size > 2) " +${nm.size - 2}" else ""
+                        out += CatalogEntry(no, g[0].second, commands[no].orEmpty(), true, internal = no in continuations, variant = label, helperId = g[0].first)
+                    }
+                    added = true
+                }
+            }
+            if (!added) out += CatalogEntry(no, plan, commands[no].orEmpty(), isHelper, internal = no in continuations)
             for (v in plan.states) {
                 if (!isolated && v > no && v !in book.helperStates && !commands.containsKey(v)) hidden.add(v)
             }
