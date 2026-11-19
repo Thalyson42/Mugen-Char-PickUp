@@ -612,6 +612,33 @@ class PlannerTests {
     }
 
     @Test
+    fun explicitBindStartingOneTickAfterTargetPhaseIsSnappedToPhaseStart() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, t]
+            type = TargetState
+            trigger1 = time = 0
+            value = 400
+            [State 300, b]
+            type = TargetBind
+            trigger1 = time = 1
+            pos = 0, -5
+            [Statedef 400]
+            [State 400, a]
+            type = ChangeAnim2
+            trigger1 = !time
+            value = 201
+            """,
+        )
+        val plan = MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true))!!
+        assertEquals(0, plan.targets[0].startTick)
+        assertEquals(0, plan.effectiveBinds.first().start)
+        assertEquals(-5f, plan.effectiveBinds.first().dy)
+    }
+
+    @Test
     fun priorityOffsetAndImplicitBindFromTargetStates() {
         val b = book(
             """

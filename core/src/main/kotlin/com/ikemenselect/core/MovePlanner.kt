@@ -53,8 +53,17 @@ class MovePlan(
      */
     val effectiveBinds: List<Bind>
         get() {
-            if (binds.isNotEmpty()) return binds
-            val ph = targets.firstOrNull { p -> p.steps.any { it.useOwner } } ?: return emptyList()
+            val ph = targets.firstOrNull { p -> p.steps.any { it.useOwner } }
+            if (binds.isNotEmpty()) {
+                // A fase do alvo começa no tick 0 mas o TargetBind só no tick 1: sem isso o P2
+                // aparece um tick fora do lugar e "teletransporta" a cada volta do loop.
+                val first = binds.first()
+                if (ph != null && first.start > ph.startTick && first.start - ph.startTick <= 3) {
+                    return listOf(Bind(ph.startTick, first.ticks, first.dx, first.dy)) + binds.drop(1)
+                }
+                return binds
+            }
+            ph ?: return emptyList()
             return listOf(Bind(ph.startTick, Int.MAX_VALUE / 2, 0f, 0f))
         }
 
