@@ -59,6 +59,13 @@ class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: 
     /** Física do estado: S (chão, atrito), C (agachado), A (ar, gravidade), N (nenhuma). */
     var physics = "N"
 
+    /** `ScreenBound value=0` / `PlayerPush value=0` neste tick. */
+    var boundOff = false
+    var pushOff = false
+
+    /** Último tick em que ficou preso a alguém (preso não é empurrado). */
+    var boundTick = -1
+
     /** Ticks parado por acerto (pausa do golpe / tremor de quem apanha). */
     var hitPause = 0
 
@@ -108,6 +115,8 @@ class Sim(
     val consts: Map<String, Double> = emptyMap(),
     /** Altura da coordenada local do personagem (para `const720p` etc.). */
     val coordY: Double = 240.0,
+    /** Semente do `Random` (o do jogo é sorteado a cada partida; aqui é determinístico para o resultado ser repetível). */
+    seed: Long = 12345L,
 ) {
     val entities = ArrayList<SimEntity>()
     private val pending = ArrayList<SimEntity>()
@@ -135,10 +144,22 @@ class Sim(
     var enemyMode = "idle"
     var enemyAttackState: Int? = null
     var enemyAttackEvery = 120
+    /** Paredes do palco (coordenada x do jogo) onde os dois lutadores ficam presos. */
+    var leftWall = -300.0
+    var rightWall = 300.0
+
+    /** Ticks de introdução antes da luta (0 = a luta começa no tick 0, `roundstate` = 2). */
+    var introTicks = 0
+
+    /** 0 pré-intro, 1 intro, 2 luta, 3 nocaute, 4 pose de vitória. */
+    var roundState = 2
+    private var koTick = -1
+    var aiLevel = 0
+    var enemyAiLevel = 0
     private var pauseLeft = 0
     private var pauseMoveLeft = 0
     private var pauser: SimEntity? = null
-    private var rnd = 12345L
+    private var rnd = seed
     private var uids = 0
 
     fun random(): Int {
@@ -272,6 +293,7 @@ class Sim(
             log("t=$tick ${enemy.name} ataca: estado $enemyAttackState")
             enter(enemy, enemyAttackState!!, enemy)
         }
+        updateRound()
         val paused = pauseLeft > 0
         val pauserMoves = paused && pauseMoveLeft > 0
         if (paused) { pauseLeft--; if (pauseMoveLeft > 0) pauseMoveLeft-- }
@@ -281,10 +303,12 @@ class Sim(
             if (e.hitPause > 0) { e.hitPause--; continue }
             if (e.fresh) e.fresh = false else { e.time++; e.animTick++ }
             if (e.bindLeft > 0) {
-                e.bindTo?.let { b -> e.x = b.x + b.facing * e.bindDx; e.y = b.y + e.bindDy }
+                e.bindTo?.let { b -> e.x = b.x + b.facing * e.bindDx; e.y = b.y + e.bindDy; e.boundTick = tick }
                 e.bindLeft--
             }
             e.posFrozen = false
+            e.boundOff = false
+            e.pushOff = false
             if (runNegative && e === root) runNegative(e)
             runState(e)
             if (!e.posFrozen) {
@@ -297,6 +321,7 @@ class Sim(
             }
         }
         if (!paused) stepFx()
+        constrain()
         resolveHits()
         entities.removeAll { !it.alive }
         entities += pending
@@ -306,6 +331,60 @@ class Sim(
         }
         for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio)
         tick++
+    }
+
+    /** Estado do round: intro, luta, nocaute e pose de vitória; o vencedor entra no estado 180 (pose), se o personagem tiver. */
+    private fun updateRound() {
+        if (!::enemy.isInitialized || !::root.isInitialized) return
+        when {
+            roundState >= 3 -> {
+                if (roundState == 3 && tick - koTick >= 60) {
+                    roundState = 4
+                    for (p in listOf(root, enemy)) if (p.life > 0 && book.states[180] != null) { log("t=$tick ${p.name} vence: estado 180"); enter(p, 180, p) }
+                }
+            }
+            tick < introTicks / 2 -> roundState = 0
+            tick < introTicks -> roundState = 1
+            else -> {
+                roundState = 2
+                if (root.life <= 0 || enemy.life <= 0) { roundState = 3; koTick = tick; log("t=$tick nocaute") }
+            }
+        }
+    }
+
+    private fun frontWidth(e: SimEntity) = consts["size.ground.front"] ?: 16.0
+    private fun backWidth(e: SimEntity) = consts["size.ground.back"] ?: 15.0
+
+    /** Paredes, chão e empurrão entre os dois lutadores; quem está sendo atingido contra a parede empurra o atacante para trás. */
+    private fun constrain() {
+        if (!::enemy.isInitialized || !::root.isInitialized) return
+        val players = listOf(root, enemy)
+        for (p in players) {
+            if (p.physics == "S" || p.physics == "C") { if (p.y > 0) { p.y = 0.0; p.vy = 0.0 } }
+        }
+        // empurrão entre os corpos (só no chão; PlayerPush value=0 desliga)
+        val a = root
+        val b = enemy
+        val dx = b.x - a.x
+        val dir = if (dx >= 0) 1.0 else -1.0
+        val reach = (if (a.facing.toDouble() == dir) frontWidth(a) else backWidth(a)) + (if (b.facing.toDouble() == -dir) frontWidth(b) else backWidth(b))
+        if (!a.pushOff && !b.pushOff && a.boundTick != tick && b.boundTick != tick && a.hitPause <= 0 && Math.abs(dx) < reach && Math.abs(a.y - b.y) < 60 && a.alive && b.alive) {
+            val push = (reach - Math.abs(dx)) / 2
+            a.x -= dir * push
+            b.x += dir * push
+        }
+        for (p in players) {
+            if (p.boundOff) continue
+            val other = if (p === root) enemy else root
+            val clamped = p.x.coerceIn(leftWall, rightWall)
+            val over = p.x - clamped
+            if (over != 0.0) {
+                p.x = clamped
+                if (p.moveType == "H" && other.moveType == "A") other.x += over // empurra o atacante para trás
+                else if (Math.abs(other.x - p.x) < frontWidth(p) + frontWidth(other)) other.x = (other.x).coerceIn(leftWall, rightWall)
+            }
+            p.x = p.x.coerceIn(leftWall, rightWall)
+        }
     }
 
     private fun stepFx() {
@@ -461,7 +540,7 @@ class Sim(
             "targetbind" -> {
                 val (dx, dy) = pair(c, "pos", ctx)
                 val time = num(c, "time", ctx)?.toInt() ?: 1
-                for (t in e.targets) if (t.alive) { t.bindTo = e; t.bindDx = dx ?: 0.0; t.bindDy = dy ?: 0.0; t.bindLeft = time; t.x = e.x + e.facing * (dx ?: 0.0); t.y = e.y + (dy ?: 0.0) }
+                for (t in e.targets) if (t.alive) { t.boundTick = tick; t.bindTo = e; t.bindDx = dx ?: 0.0; t.bindDy = dy ?: 0.0; t.bindLeft = time; t.x = e.x + e.facing * (dx ?: 0.0); t.y = e.y + (dy ?: 0.0) }
             }
             "targetfacing" -> {
                 val v = num(c, "value", ctx)?.toInt() ?: return
@@ -477,6 +556,7 @@ class Sim(
                 val (dx, dy) = pair(c, "pos", ctx)
                 e.bindTo = to; e.bindDx = dx ?: 0.0; e.bindDy = dy ?: 0.0
                 e.bindLeft = num(c, "time", ctx)?.toInt() ?: 1
+                e.boundTick = tick
                 e.x = to.x + to.facing * e.bindDx; e.y = to.y + e.bindDy
                 num(c, "facing", ctx)?.toInt()?.let { if (it > 0) e.facing = to.facing else if (it < 0) e.facing = -to.facing }
             }
@@ -486,6 +566,8 @@ class Sim(
                 pauser = e
                 log("t=$tick ${e.name} ${c.type} por $pauseLeft ticks")
             }
+            "screenbound" -> if ((num(c, "value", ctx) ?: 1.0) == 0.0) e.boundOff = true
+            "playerpush" -> if ((num(c, "value", ctx) ?: 1.0) == 0.0) e.pushOff = true
             "posfreeze" -> if ((num(c, "value", ctx) ?: 1.0) != 0.0) e.posFrozen = true
             "gravity" -> e.vy += yaccel
             "sprpriority" -> num(c, "value", ctx)?.let { e.sprPriority = it.toInt() }
@@ -601,6 +683,7 @@ class Sim(
         val dmg = hd.n("damage", i) ?: 0.0
         val kill = (hd.n(if (guarded) "guard.kill" else "kill") ?: 1.0) != 0.0
         d.life = (d.life - dmg.toInt()).coerceAtLeast(if (kill) 0 else 1)
+        if (d.life <= 0 && (d === root || d === enemy) && book.states[5150] != null) { log("t=$tick ${d.name} nocauteado: estado 5150"); enter(d, 5150, d) }
         val k = if (guarded) 0.5 else 1.0
         val hitDmg = hd.n("damage") ?: 0.0
         val get = hd.n("getpower", i) ?: (hitDmg * 0.7 * k)
@@ -632,11 +715,11 @@ class Sim(
 
     /** Controladores que não mudam nada do que o simulador acompanha (visual, vida, poder, som...). */
     private val noEffect = setOf(
-        "null", "screenbound", "width", "hitby", "nothitby", "palfx", "allpalfx", "bgpalfx", "afterimage", "afterimagetime",
+        "null", "width", "hitby", "nothitby", "palfx", "allpalfx", "bgpalfx", "afterimage", "afterimagetime",
         "envcolor", "envshake", "fallenvshake", "displaytoclipboard", "appendtoclipboard", "debug", "trans", "offset",
         "forcefeedback", "defencemulset",
         "hitfalldamage", "hitfallset", "hitfallvel", "makedust", "gamemakeanim", "sndpan", "stopsnd", "assertspecial",
-        "attackdist", "attackmulset", "fallrecover", "hitadd", "reversaldef", "playerpush", "targetdrop", "angledraw",
+        "attackdist", "attackmulset", "fallrecover", "hitadd", "reversaldef", "targetdrop", "angledraw",
         "angleadd", "angleset", "anglemul", "text", "mapset", "modifybgctrl", "bgpalfx",
     )
 
@@ -835,7 +918,14 @@ class Sim(
                 "numexplod" -> fx.count { it.alive && it.kind == "explod" && it.owner === (e.root ?: e) && (a0 == null || it.id == a0.toInt()) }.toDouble()
                 "numproj" -> fx.count { it.alive && it.kind == "proj" && it.owner === (e.root ?: e) }.toDouble()
                 "numprojid" -> fx.count { it.alive && it.kind == "proj" && it.owner === (e.root ?: e) && it.id == a0?.toInt() }.toDouble()
-                "ailevel", "isbound", "aicontrol", "win", "lose", "drawgame", "matchover", "hitover" -> if (name == "hitover") b(e.hitPause <= 0) else 0.0
+                "ailevel" -> (if (e === enemy || e.root === enemy) enemyAiLevel else aiLevel).toDouble()
+                "aicontrol" -> b((if (e === enemy || e.root === enemy) enemyAiLevel else aiLevel) > 0)
+                "win", "winko", "wintime" -> b(roundState >= 3 && (e.root ?: e).life > 0 && enemyOf(e).life <= 0)
+                "lose", "loseko", "losetime" -> b(roundState >= 3 && (e.root ?: e).life <= 0 && enemyOf(e).life > 0)
+                "drawgame" -> b(roundState >= 3 && root.life <= 0 && enemy.life <= 0)
+                "matchover" -> b(roundState >= 4)
+                "isbound" -> b(e.bindLeft > 0)
+                "hitover", "hitshakeover" -> b(e.hitPause <= 0)
                 "numenemy", "numpartner" -> 1.0
                 "roundno", "matchno" -> 1.0
                 "gethitvar" -> a0 ?: 0.0
@@ -846,8 +936,8 @@ class Sim(
                 "command" -> command
                 "name" -> if (e === root) rootName else e.name
                 "random" -> random().toDouble()
-                "roundstate" -> 2.0
-                "gametime" -> tick.toDouble()
+                "roundstate" -> (if (roundState >= 3) roundState else if (tick < introTicks / 2) 0 else if (tick < introTicks) 1 else 2).toDouble()
+                "gametime" -> (tick - introTicks).coerceAtLeast(0).toDouble()
                 "teamside" -> if (e === enemy) 2.0 else 1.0
                 "const" -> a0 ?: 1.0
                 "cond", "ifelse" -> (args?.getOrNull(0) as? Double)?.let { if (it != 0.0) args.getOrNull(1) else args.getOrNull(2) }
@@ -887,7 +977,12 @@ class Sim(
                 "playeridexist" -> 0.0
                 "screenheight" -> 240.0
                 "screenwidth" -> 320.0
-                "backedgebodydist", "frontedgebodydist", "backedgedist", "frontedgedist" -> 100.0
+                "backedgedist" -> if (e.facing > 0) e.x - leftWall else rightWall - e.x
+                "frontedgedist" -> if (e.facing > 0) rightWall - e.x else e.x - leftWall
+                "backedgebodydist" -> (if (e.facing > 0) e.x - leftWall else rightWall - e.x) - backWidth(e)
+                "frontedgebodydist" -> (if (e.facing > 0) rightWall - e.x else e.x - leftWall) - frontWidth(e)
+                "screenpos.x" -> e.x + 160.0
+                "screenpos.y" -> e.y
                 else -> consts[name] ?: defaultConsts[name] ?: if (name.startsWith("size.")) 1.0 else unk(name)
             }
         }

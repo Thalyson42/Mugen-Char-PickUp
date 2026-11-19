@@ -483,4 +483,59 @@ class SimTests {
         assertEquals(400, sim.root.state)
         assertEquals(960, sim.root.life)
     }
+
+    @Test
+    fun wallsHoldPlayersAndScreenBoundOffFreesThem() {
+        val run = """
+            [Statedef 0]
+            ctrl = 1
+            physics = N
+            [State 0, v]
+            type = VelSet
+            trigger1 = 1
+            x = 20
+        """
+        val sim = Sim(book(run), { air[it] })
+        sim.rightWall = 100.0
+        sim.spawnRoot(0.0)
+        sim.spawnEnemy(-50.0)
+        sim.run(30)
+        assertEquals(100.0, sim.root.x)
+        val free = Sim(book(run + "\n[State 0, b]\ntype = ScreenBound\ntrigger1 = 1\nvalue = 0\n"), { air[it] })
+        free.rightWall = 100.0
+        free.spawnRoot(0.0)
+        free.spawnEnemy(-50.0)
+        free.run(30)
+        assertTrue(free.root.x > 300.0)
+    }
+
+    @Test
+    fun bodiesPushEachOtherApartAndEdgeDistancesFollowTheWalls() {
+        val sim = Sim(book("[Statedef 0]\nctrl = 1\n"), { air[it] })
+        sim.spawnRoot(0.0)
+        sim.spawnEnemy(5.0)
+        sim.run(2)
+        assertTrue(sim.enemy.x - sim.root.x >= 31.0, "separados: ${sim.enemy.x - sim.root.x}")
+        val front = sim.debugEval(sim.root, "frontedgedist") as Double
+        val back = sim.debugEval(sim.root, "backedgedist") as Double
+        assertEquals(600.0, front + back)
+    }
+
+    @Test
+    fun roundStatesAndKnockoutWinTriggers() {
+        val sim = Sim(book("[Statedef 0]\nctrl = 1\n[Statedef 180]\nanim = 0\n[Statedef 5150]\nanim = 0\n[Statedef 100]\nanim = 200\n[State 100, h]\ntype = HitDef\ntrigger1 = 1\ndamage = 2000\np2stateno = 400\n[Statedef 400]\nanim = 220\n"), { air[it] })
+        sim.introTicks = 10
+        sim.spawnRoot(-20.0, state = 100)
+        sim.spawnEnemy(20.0)
+        assertEquals(0.0, sim.debugEval(sim.root, "roundstate"))
+        sim.run(6)
+        assertEquals(1.0, sim.debugEval(sim.root, "roundstate"))
+        sim.run(10)
+        assertEquals(3.0, sim.debugEval(sim.root, "roundstate"))
+        assertEquals(1.0, sim.debugEval(sim.root, "win"))
+        assertEquals(1.0, sim.debugEval(sim.enemy, "lose"))
+        sim.run(70)
+        assertEquals(4.0, sim.debugEval(sim.root, "roundstate"))
+        assertEquals(180, sim.root.state)
+    }
 }
