@@ -477,7 +477,7 @@ object MovePlanner {
                 "alive" -> 1.0
                 "roundstate" -> 2.0
                 "numenemy" -> 1.0
-                "ishelper" -> if (!opts.asHelper) 0.0 else {
+                "ishelper" -> if (asTarget || !opts.asHelper) 0.0 else { // o adversário que sofre o golpe não é helper
                     val want = opts.helperId
                     val asked = (args?.getOrNull(0) as? Double)?.toInt()
                     if (want == null || asked == null || asked == want) 1.0 else 0.0

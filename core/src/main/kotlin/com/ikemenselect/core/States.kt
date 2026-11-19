@@ -63,8 +63,9 @@ class StateBook(val states: Map<Int, StateDef>, val commandNames: Set<String>) {
         // (estado, direção, é do atacante?): o atacante segue por p1stateno e manda o alvo adiante com TargetState
         val queue = ArrayDeque<Triple<Int, Int, Boolean>>()
         val seenAtk = HashSet<Int>()
+        val ofHelpers = helperClosure // o lado de um helper não é o do P1 em tela: o p2facing dele não vale aqui
         for (st in states.values) for (c in st.controllers) {
-            if (c.type != "hitdef") continue
+            if (c.type != "hitdef" || st.no in ofHelpers) continue
             val f = c.param("p2facing")?.trim()?.toIntOrNull()?.takeIf { it != 0 } ?: continue
             c.param("p2stateno")?.trim()?.toIntOrNull()?.let { if (out.putIfAbsent(it, f) == null) queue.addLast(Triple(it, f, false)) }
             c.param("p1stateno")?.trim()?.toIntOrNull()?.let { if (seenAtk.add(it)) queue.addLast(Triple(it, f, true)) }
