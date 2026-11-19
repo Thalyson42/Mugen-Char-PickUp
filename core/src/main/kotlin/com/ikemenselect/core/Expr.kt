@@ -32,7 +32,7 @@ object Expr {
     }
 
     private val animElemPair = Regex("""\banimelem\s*=\s*(\d+)\s*,\s*(<=|>=|!=|=|<|>)?\s*(-?\d+)""", RegexOption.IGNORE_CASE)
-    private val axisSuffix = Regex("""\b(p2bodydist|p2dist|enemydist|enemybodydist)\s+([xy])\b""", RegexOption.IGNORE_CASE)
+    private val axisSuffix = Regex("""\b(p2bodydist|p2dist|enemydist|enemybodydist|pos|vel|screenpos|parentdist|rootdist)\s+([xy])\b""", RegexOption.IGNORE_CASE)
 
     /** `animelem = N, op X` vira `animelemtime(N) op X`; `p2bodydist x` vira `p2bodydist.x`. */
     private fun normalize(text: String): String =
