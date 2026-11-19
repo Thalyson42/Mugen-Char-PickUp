@@ -46,7 +46,23 @@ class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: 
     var bindDy = 0.0
     var bindLeft = 0
     val persist = HashMap<Controller, Int>()
+    var posFrozen = false
     val isHelper: Boolean get() = parent != null
+}
+
+/** Efeito vivo que não roda estados: um Explod (kind "explod") ou um projétil (kind "proj"). */
+class SimFx(
+    val kind: String, val id: Int, val owner: SimEntity, var anim: Int,
+    var x: Double, var y: Double, var vx: Double, var vy: Double, var facing: Int,
+) {
+    var left = -1            // ticks restantes (-1 = sem limite, -2 = até a animação acabar)
+    var bindLeft = 0
+    var bindDx = 0.0
+    var bindDy = 0.0
+    var animTick = 0
+    var prio = 0
+    var hit: HitDefData? = null
+    var alive = true
 }
 
 class SimFrame(
@@ -76,6 +92,14 @@ class Sim(
     val ignoredTypes = LinkedHashSet<String>()
     val frames = ArrayList<SimFrame>()
     val sounds = ArrayList<Pair<Int, String>>()
+    /** Explods e projéteis vivos. */
+    val fx = ArrayList<SimFx>()
+
+    /** Aceleração vertical da gravidade (padrão do M.U.G.E.N quando o personagem não diz outra). */
+    var yaccel = 0.44
+    private var pauseLeft = 0
+    private var pauseMoveLeft = 0
+    private var pauser: SimEntity? = null
     private var rnd = 12345L
     private var uids = 0
 
@@ -169,18 +193,23 @@ class Sim(
     // ------------------------------------------------------------------ passo
 
     fun step() {
+        val paused = pauseLeft > 0
+        val pauserMoves = paused && pauseMoveLeft > 0
+        if (paused) { pauseLeft--; if (pauseMoveLeft > 0) pauseMoveLeft-- }
         for (e in entities.toList()) {
             if (!e.alive) continue
+            if (paused && !(e === pauser && pauserMoves)) continue
             if (e.fresh) e.fresh = false else { e.time++; e.animTick++ }
             if (e.bindLeft > 0) {
                 e.bindTo?.let { b -> e.x = b.x + b.facing * e.bindDx; e.y = b.y + e.bindDy }
                 e.bindLeft--
             }
+            e.posFrozen = false
             if (runNegative && e === root) runNegative(e)
             runState(e)
-            e.x += e.vx * e.facing
-            e.y += e.vy
+            if (!e.posFrozen) { e.x += e.vx * e.facing; e.y += e.vy }
         }
+        if (!paused) stepFx()
         resolveHits()
         entities.removeAll { !it.alive }
         entities += pending
@@ -188,7 +217,51 @@ class Sim(
         for (e in entities) {
             frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority)
         }
+        for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio)
         tick++
+    }
+
+    private fun stepFx() {
+        for (f in fx.toList()) {
+            if (!f.alive) continue
+            f.animTick++
+            if (f.bindLeft != 0) {
+                f.x = f.owner.x + f.owner.facing * f.bindDx
+                f.y = f.owner.y + f.bindDy
+                if (f.bindLeft > 0) f.bindLeft--
+            }
+            f.x += f.vx * f.facing
+            f.y += f.vy
+            when {
+                f.left > 0 -> if (--f.left == 0) f.alive = false
+                f.left == -2 -> anims(f.anim)?.let { an -> if (!an.infinite && f.animTick >= an.totalTicks) f.alive = false }
+            }
+            if (f.kind == "proj" && Math.abs(f.x - f.owner.x) > 1200) f.alive = false // saiu da tela
+        }
+        // projéteis: acerto no adversário
+        for (f in fx.toList()) {
+            val hd = f.hit ?: continue
+            if (!f.alive || f.kind != "proj") continue
+            val d = enemyOf(f.owner)
+            if (collide && !projOverlaps(f, d)) continue
+            log("t=$tick projétil ${f.id} de ${f.owner.name} acerta ${d.name} (p2=${hd.p2stateno} p2facing=${hd.p2facing})")
+            if (d !in f.owner.targets) f.owner.targets += d
+            if (hd.p2facing != 0) d.facing = if (hd.p2facing > 0) f.facing else -f.facing
+            hd.p2stateno?.takeIf { it >= 0 }?.let { enter(d, it, f.owner) }
+            f.alive = false
+        }
+        fx.removeAll { !it.alive }
+    }
+
+    private fun projOverlaps(f: SimFx, d: SimEntity): Boolean {
+        val an = anims(f.anim) ?: return false
+        val fr = an.frames.getOrNull(an.frameIndexAt(f.animTick, loop = true)) ?: return false
+        val atk = fr.clsn1.map { b ->
+            val xa = f.x + f.facing * b.x1; val xb = f.x + f.facing * b.x2
+            doubleArrayOf(minOf(xa, xb), f.y + b.y1, maxOf(xa, xb), f.y + b.y2)
+        }
+        val body = worldBoxes(d, frameOf(d)?.clsn2.orEmpty())
+        return atk.any { p -> body.any { q -> p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3] } }
     }
 
     fun run(ticks: Int) { repeat(ticks) { step() } }
@@ -311,8 +384,109 @@ class Sim(
                 for (t in e.targets) if (t.alive) t.facing = if (v > 0) e.facing else if (v < 0) -e.facing else t.facing
             }
             "playsnd" -> c.param("value")?.let { sounds += tick to it.trim() }
+            "bindtoparent", "bindtoroot", "bindtotarget" -> {
+                val to = when (c.type) {
+                    "bindtoparent" -> e.parent
+                    "bindtoroot" -> e.root
+                    else -> e.targets.firstOrNull { it.alive }
+                } ?: return
+                val (dx, dy) = pair(c, "pos", ctx)
+                e.bindTo = to; e.bindDx = dx ?: 0.0; e.bindDy = dy ?: 0.0
+                e.bindLeft = num(c, "time", ctx)?.toInt() ?: 1
+                e.x = to.x + to.facing * e.bindDx; e.y = to.y + e.bindDy
+                num(c, "facing", ctx)?.toInt()?.let { if (it > 0) e.facing = to.facing else if (it < 0) e.facing = -to.facing }
+            }
+            "pause", "superpause" -> {
+                pauseLeft = num(c, "time", ctx)?.toInt()?.coerceIn(0, 300) ?: 30
+                pauseMoveLeft = num(c, "movetime", ctx)?.toInt()?.coerceAtLeast(0) ?: 0
+                pauser = e
+                log("t=$tick ${e.name} ${c.type} por $pauseLeft ticks")
+            }
+            "posfreeze" -> if ((num(c, "value", ctx) ?: 1.0) != 0.0) e.posFrozen = true
+            "gravity" -> e.vy += yaccel
+            "sprpriority" -> num(c, "value", ctx)?.let { e.sprPriority = it.toInt() }
+            "movehitreset" -> { e.moveHit = false; e.hitDone = false }
+            "targetvelset" -> for (t in e.targets) if (t.alive) { num(c, "x", ctx)?.let { t.vx = it }; num(c, "y", ctx)?.let { t.vy = it } }
+            "targetveladd" -> for (t in e.targets) if (t.alive) { num(c, "x", ctx)?.let { t.vx += it }; num(c, "y", ctx)?.let { t.vy += it } }
+            "explod" -> makeExplod(e, c, ctx)
+            "modifyexplod" -> modifyExplod(e, c, ctx)
+            "removeexplod" -> {
+                val id = num(c, "id", ctx)?.toInt()
+                for (f in fx) if (f.kind == "explod" && f.owner === (e.root ?: e) && (id == null || f.id == id)) f.alive = false
+            }
+            "projectile" -> makeProjectile(e, c, ctx)
+            in noEffect -> {}
             else -> ignoredTypes += c.type
         }
+    }
+
+    /** Controladores que não mudam nada do que o simulador acompanha (visual, vida, poder, som...). */
+    private val noEffect = setOf(
+        "null", "screenbound", "width", "hitby", "nothitby", "palfx", "allpalfx", "bgpalfx", "afterimage", "afterimagetime",
+        "envcolor", "envshake", "fallenvshake", "displaytoclipboard", "appendtoclipboard", "debug", "trans", "offset",
+        "forcefeedback", "lifeadd", "lifeset", "poweradd", "powerset", "targetlifeadd", "targetpoweradd", "defencemulset",
+        "hitfalldamage", "hitfallset", "hitfallvel", "makedust", "gamemakeanim", "sndpan", "stopsnd", "assertspecial",
+        "attackdist", "attackmulset", "fallrecover", "hitadd", "reversaldef", "playerpush", "targetdrop", "angledraw",
+        "angleadd", "angleset", "anglemul", "text", "mapset", "modifybgctrl", "bgpalfx",
+    )
+
+    private val capFx = 200
+
+    private fun parseAnimId(text: String?, ctx: Ctx): Int? {
+        val t = text?.trim() ?: return null
+        if (t.startsWith("f", ignoreCase = true) && t.drop(1).all { it.isDigit() } && t.length > 1) return null // animação do fightfx
+        return (Expr.eval(t, ctx) as? Double)?.toInt()
+    }
+
+    private fun makeExplod(e: SimEntity, c: Controller, ctx: Ctx) {
+        if (fx.size >= capFx) return
+        val owner = e.root ?: e
+        val id = num(c, "id", ctx)?.toInt() ?: -1
+        val anim = parseAnimId(c.param("anim"), ctx) ?: return
+        val (px, py) = pair(c, "pos", ctx)
+        val (vx, vy) = pair(c, "vel", ctx)
+        val postype = c.param("postype")?.trim()?.lowercase() ?: "p1"
+        val base = if (postype == "p2") enemyOf(e) else e
+        val facingParam = num(c, "facing", ctx)?.toInt() ?: 1
+        val f = SimFx("explod", id, owner, anim, base.x + base.facing * (px ?: 0.0), base.y + (py ?: 0.0), vx ?: 0.0, vy ?: 0.0,
+            if (facingParam < 0) -base.facing else base.facing)
+        val rt = num(c, "removetime", ctx)?.toInt() ?: -2
+        f.left = rt
+        val bt = num(c, "bindtime", ctx)?.toInt() ?: 1
+        if (bt != 0 && postype != "left" && postype != "right") { f.bindLeft = bt; f.bindDx = px ?: 0.0; f.bindDy = py ?: 0.0 }
+        f.prio = num(c, "sprpriority", ctx)?.toInt() ?: 0
+        fx += f
+    }
+
+    private fun modifyExplod(e: SimEntity, c: Controller, ctx: Ctx) {
+        val id = num(c, "id", ctx)?.toInt()
+        val owner = e.root ?: e
+        val (px, py) = pair(c, "pos", ctx)
+        for (f in fx) if (f.kind == "explod" && f.owner === owner && (id == null || f.id == id)) {
+            parseAnimId(c.param("anim"), ctx)?.let { f.anim = it; f.animTick = 0 }
+            px?.let { f.x = owner.x + owner.facing * it; f.bindDx = it }
+            py?.let { f.y = owner.y + it; f.bindDy = it }
+            num(c, "removetime", ctx)?.let { f.left = it.toInt() }
+            num(c, "bindtime", ctx)?.let { f.bindLeft = it.toInt() }
+        }
+    }
+
+    private fun makeProjectile(e: SimEntity, c: Controller, ctx: Ctx) {
+        if (fx.size >= capFx) return
+        val owner = e.root ?: e
+        val id = num(c, "projid", ctx)?.toInt() ?: 0
+        val anim = num(c, "projanim", ctx)?.toInt() ?: 0
+        val (ox, oy) = pair(c, "offset", ctx)
+        val (vx, vy) = pair(c, "velocity", ctx)
+        val f = SimFx("proj", id, owner, anim, e.x + e.facing * (ox ?: 0.0), e.y + (oy ?: 0.0), vx ?: 0.0, vy ?: 0.0, e.facing)
+        f.left = num(c, "projremovetime", ctx)?.toInt() ?: -1
+        f.prio = num(c, "projsprpriority", ctx)?.toInt() ?: 3
+        f.hit = HitDefData(
+            num(c, "p1stateno", ctx)?.toInt(), num(c, "p2stateno", ctx)?.toInt(),
+            num(c, "p1facing", ctx)?.toInt() ?: 0, num(c, "p2facing", ctx)?.toInt() ?: 0,
+        )
+        fx += f
+        log("t=$tick ${e.name} dispara projétil $id (anim $anim)")
     }
 
     private fun varOp(e: SimEntity, c: Controller, ctx: Ctx) {
@@ -445,7 +619,9 @@ class Sim(
                     val r = e.root ?: e
                     entities.count { it.alive && it.root === r && (a0 == null || it.helperId == a0.toInt()) }.toDouble()
                 }
-                "numexplod", "numproj", "numprojid" -> 0.0
+                "numexplod" -> fx.count { it.alive && it.kind == "explod" && it.owner === (e.root ?: e) && (a0 == null || it.id == a0.toInt()) }.toDouble()
+                "numproj" -> fx.count { it.alive && it.kind == "proj" && it.owner === (e.root ?: e) }.toDouble()
+                "numprojid" -> fx.count { it.alive && it.kind == "proj" && it.owner === (e.root ?: e) && it.id == a0?.toInt() }.toDouble()
                 "ailevel", "isbound", "aicontrol", "win", "lose", "drawgame", "matchover", "hitover" -> if (name == "hitover") 1.0 else 0.0
                 "numenemy", "numpartner" -> 1.0
                 "roundno", "matchno" -> 1.0

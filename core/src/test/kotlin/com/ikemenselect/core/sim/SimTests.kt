@@ -197,4 +197,103 @@ class SimTests {
         assertEquals(1, s.entities.count { it.helperId == 9000 })
     }
 
+
+    @Test
+    fun explodExistsCountsAndExpires() {
+        val s = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, e]
+            type = Explod
+            trigger1 = !time
+            id = 77
+            anim = 210
+            pos = 10, -5
+            removetime = 5
+            [State 100, n]
+            type = VarSet
+            trigger1 = numexplod(77) = 1
+            var(3) = 9
+            """,
+            100, ticks = 3,
+        )
+        assertEquals(1, s.fx.count { it.kind == "explod" && it.id == 77 })
+        assertEquals(9, s.root.vars[3])
+        s.run(10)
+        assertEquals(0, s.fx.size)
+    }
+
+    @Test
+    fun projectileTravelsAndHitsTheEnemyOnContact() {
+        val s = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, p]
+            type = Projectile
+            trigger1 = !time
+            projid = 5
+            projanim = 800
+            velocity = 10, 0
+            offset = 20, -40
+            p2stateno = 400
+            p2facing = 1
+            [Statedef 400]
+            anim = 220
+            """,
+            100, ticks = 40,
+        )
+        assertEquals(400, s.enemy.state)
+        assertEquals(1, s.enemy.facing)
+        assertEquals(0, s.fx.size) // sumiu ao acertar
+        assertTrue(s.log.any { it.contains("dispara projétil 5") })
+    }
+
+    @Test
+    fun bindToParentFollowsTheParent() {
+        val s = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, v]
+            type = VelSet
+            trigger1 = 1
+            x = 2
+            [Statedef 300]
+            anim = 210
+            [State 300, b]
+            type = BindToParent
+            trigger1 = 1
+            time = 100
+            pos = 15, 0
+            """,
+            300, helper = 9, ticks = 3,
+        )
+        val h = s.entities.first { it.helperId == 9 }
+        assertTrue(Math.abs(h.x - (s.root.x + 15)) < 0.01, "helper colado no pai: ${h.x} vs ${s.root.x}")
+    }
+
+    @Test
+    fun pauseFreezesEverythingButThePauser() {
+        val s = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, p]
+            type = Pause
+            trigger1 = !time
+            time = 10
+            movetime = 10
+            [State 100, v]
+            type = VarAdd
+            trigger1 = 1
+            v = 1
+            value = 1
+            """,
+            100, ticks = 8,
+        )
+        assertTrue(s.enemy.time <= 1, "o adversário ficou parado")
+        assertTrue(s.root.time >= 6, "quem pausou continua andando")
+    }
 }
