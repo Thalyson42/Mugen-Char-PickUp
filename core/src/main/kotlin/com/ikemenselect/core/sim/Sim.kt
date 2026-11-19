@@ -66,6 +66,10 @@ class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: 
     /** Último tick em que ficou preso a alguém (preso não é empurrado). */
     var boundTick = -1
 
+    /** RemapPal: "grupo,índice" -> "grupo,índice". */
+    val palRemaps = LinkedHashMap<String, String>()
+    val hitOverrides = arrayOfNulls<HitOv>(8)
+
     /** Ticks parado por acerto (pausa do golpe / tremor de quem apanha). */
     var hitPause = 0
 
@@ -93,11 +97,24 @@ class SimFx(
     var prio = 0
     var hit: HitDefData? = null
     var alive = true
+    var ax = 0.0
+    var ay = 0.0
+    var postype = "p1"
+    var removeOnGetHit = false
+    var bindToEnemy = false
+
+    /** Ticks que continua andando mesmo durante Pause/SuperPause (`pausemovetime`/`supermovetime`). */
+    var pauseMove = 0
 }
+
+/** Um espaço de `HitOverride`: golpes com esse `attr` mandam o defensor para [stateno] em vez de apanhar. */
+class HitOv(val attr: String, val stateno: Int, var time: Int, val forceAir: Boolean)
 
 class SimFrame(
     val tick: Int, val who: String, val state: Int, val anim: Int, val animFrom: String,
     val x: Double, val y: Double, val facing: Int, val prio: Int,
+    /** Troca de paleta ativa (RemapPal): "grupo,índice" de origem -> destino. */
+    val remap: Map<String, String> = emptyMap(),
 )
 
 class Sim(
@@ -214,6 +231,10 @@ class Sim(
     /** `hitdefattr = SCA, NA, SA`: vale quando o HitDef ativo de [who] tem esse tipo de estado e esse tipo de ataque. */
     private fun attrMatches(who: SimEntity, list: String): Boolean {
         val attr = who.hitDef?.strs?.get("attr") ?: return false
+        return attrListMatches(attr, list)
+    }
+
+    private fun attrListMatches(attr: String, list: String): Boolean {
         val mine = attr.split(',').map { it.trim().uppercase() }
         val want = list.split(',').map { it.trim().uppercase() }
         val types = want.firstOrNull().orEmpty()
@@ -301,6 +322,7 @@ class Sim(
             if (!e.alive) continue
             if (paused && !(e === pauser && pauserMoves)) continue
             if (e.hitPause > 0) { e.hitPause--; continue }
+            for (i in e.hitOverrides.indices) e.hitOverrides[i]?.let { ov -> if (ov.time > 0 && --ov.time == 0) e.hitOverrides[i] = null }
             if (e.fresh) e.fresh = false else { e.time++; e.animTick++ }
             if (e.bindLeft > 0) {
                 e.bindTo?.let { b -> e.x = b.x + b.facing * e.bindDx; e.y = b.y + e.bindDy; e.boundTick = tick }
@@ -320,14 +342,14 @@ class Sim(
                 e.x += e.vx * e.facing; e.y += e.vy
             }
         }
-        if (!paused) stepFx()
+        stepFx(pausedOnly = paused)
         constrain()
         resolveHits()
         entities.removeAll { !it.alive }
         entities += pending
         pending.clear()
         for (e in entities) {
-            frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority)
+            frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority, e.palRemaps.toMap())
         }
         for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio)
         tick++
@@ -387,23 +409,31 @@ class Sim(
         }
     }
 
-    private fun stepFx() {
+    private fun stepFx(pausedOnly: Boolean = false) {
         for (f in fx.toList()) {
             if (!f.alive) continue
+            if (pausedOnly) { if (f.pauseMove <= 0) continue; f.pauseMove-- }
             f.animTick++
             if (f.bindLeft != 0) {
-                f.x = f.owner.x + f.owner.facing * f.bindDx
-                f.y = f.owner.y + f.bindDy
+                val base = if (f.bindToEnemy) enemyOf(f.owner) else f.owner
+                f.x = base.x + base.facing * f.bindDx
+                f.y = base.y + f.bindDy
                 if (f.bindLeft > 0) f.bindLeft--
             }
+            f.vx += f.ax; f.vy += f.ay
             f.x += f.vx * f.facing
             f.y += f.vy
             when {
                 f.left > 0 -> if (--f.left == 0) f.alive = false
-                f.left == -2 -> anims(f.anim)?.let { an -> if (!an.infinite && f.animTick >= an.totalTicks) f.alive = false }
+                f.left == -2 -> {
+                    val an = anims(f.anim)
+                    if (an == null) { if (f.animTick >= 30) f.alive = false } // animação de fightfx: dura pouco
+                    else if (!an.infinite && f.animTick >= an.totalTicks) f.alive = false
+                }
             }
             if (f.kind == "proj" && Math.abs(f.x - f.owner.x) > 1200) f.alive = false // saiu da tela
         }
+        if (pausedOnly) { fx.removeAll { !it.alive }; return }
         // projéteis: acerto no adversário
         for (f in fx.toList()) {
             val hd = f.hit ?: continue
@@ -431,6 +461,9 @@ class Sim(
     }
 
     fun run(ticks: Int) { repeat(ticks) { step() } }
+
+    /** Roda o estado [state] no adversário agora (útil para preparar cenários, ex.: ativar um HitOverride nele). */
+    fun enemyOverride(state: Int) { enter(enemy, state, enemy); runState(enemy) }
 
     private fun runNegative(e: SimEntity) {
         for (no in intArrayOf(-3, -2, -1)) {
@@ -582,6 +615,18 @@ class Sim(
                 for (t in e.targets) if (t.alive) lifeChange(t, v.toInt(), kill = (num(c, "kill", ctx) ?: 1.0) != 0.0, absolute = (num(c, "absolute", ctx) ?: 0.0) != 0.0)
             }
             "targetpoweradd" -> num(c, "value", ctx)?.let { v -> for (t in e.targets) if (t.alive) t.power = (t.power + v.toInt()).coerceIn(0, t.powerMax) }
+            "remappal" -> {
+                val src = c.param("source")?.replace(" ", "") ?: return
+                val dst = c.param("dest")?.replace(" ", "") ?: return
+                e.palRemaps[src] = dst
+            }
+            "hitoverride" -> {
+                val slot = (num(c, "slot", ctx)?.toInt() ?: 0).coerceIn(0, 7)
+                val st = num(c, "stateno", ctx)?.toInt() ?: -1
+                val attr = c.param("attr")?.trim() ?: return
+                if (st < 0) e.hitOverrides[slot] = null
+                else e.hitOverrides[slot] = HitOv(attr, st, num(c, "time", ctx)?.toInt() ?: 1, (num(c, "forceair", ctx) ?: 0.0) != 0.0)
+            }
             "explod" -> makeExplod(e, c, ctx)
             "modifyexplod" -> modifyExplod(e, c, ctx)
             "removeexplod" -> {
@@ -630,7 +675,18 @@ class Sim(
      */
     private fun applyHit(src: SimEntity, d: SimEntity, hd: HitDefData, srcFacing: Int, byProjectile: Boolean) {
         if (d !in src.targets) src.targets += d
+        val hdAttr = hd.strs["attr"]
+        val ov = if (hdAttr == null) null else d.hitOverrides.firstOrNull { it != null && attrListMatches(hdAttr, it.attr) }
+        if (ov != null) {
+            log("t=$tick ${d.name} ignora o golpe (HitOverride): estado ${ov.stateno}")
+            if (ov.forceAir) d.stateType = "A"
+            enter(d, ov.stateno, d)
+            if (!byProjectile) { src.moveHit = true; src.hitDone = true }
+            return
+        }
         val air = d.stateType == "A"
+        // quem apanha perde os Explods marcados com removeongethit
+        for (f in fx) if (f.removeOnGetHit && f.owner === d) f.alive = false
         if (enemyMode == "guard" && d === enemy && guardCovers(hd, d)) { applyGuard(src, d, hd, srcFacing, byProjectile); return }
         val vel = hd.nums[if (air) "air.velocity" else "ground.velocity"].orEmpty()
         val fallVel = hd.nums["fall.xvel"]?.getOrNull(0) to hd.nums["fall.yvel"]?.getOrNull(0)
@@ -727,12 +783,25 @@ class Sim(
 
     private fun parseAnimId(text: String?, ctx: Ctx): Int? {
         val t = text?.trim() ?: return null
-        if (t.startsWith("f", ignoreCase = true) && t.drop(1).all { it.isDigit() } && t.length > 1) return null // animação do fightfx
+        if (t.startsWith("f", ignoreCase = true) && t.drop(1).all { it.isDigit() } && t.length > 1) return -1 // animação do fightfx (não está no .air do personagem)
         return (Expr.eval(t, ctx) as? Double)?.toInt()
     }
 
     private fun lifeChange(t: SimEntity, v: Int, kill: Boolean, absolute: Boolean) {
         t.life = (t.life + v).coerceIn(if (kill) 0 else 1, t.lifeMax)
+    }
+
+    private val screenHalf = 160.0
+
+    /** Posição inicial do Explod conforme o `postype` (p1, p2, front, back, left, right, none) e o lado em que nasce virado. */
+    private fun explodOrigin(e: SimEntity, postype: String, px: Double, py: Double): Triple<Double, Double, Int> = when (postype) {
+        "p2" -> enemyOf(e).let { o -> Triple(o.x + o.facing * px, o.y + py, o.facing) }
+        "front" -> (if (e.facing > 0) screenHalf else -screenHalf).let { edge -> Triple(edge + px * e.facing, py, e.facing) }
+        "back" -> (if (e.facing > 0) -screenHalf else screenHalf).let { edge -> Triple(edge + px * e.facing, py, e.facing) }
+        "left" -> Triple(-screenHalf + px, py, 1)
+        "right" -> Triple(screenHalf + px, py, 1)
+        "none" -> Triple(px, py, 1)
+        else -> Triple(e.x + e.facing * px, e.y + py, e.facing) // p1
     }
 
     private fun makeExplod(e: SimEntity, c: Controller, ctx: Ctx) {
@@ -742,16 +811,23 @@ class Sim(
         val anim = parseAnimId(c.param("anim"), ctx) ?: return
         val (px, py) = pair(c, "pos", ctx)
         val (vx, vy) = pair(c, "vel", ctx)
+        val (ax, ay) = pair(c, "accel", ctx)
         val postype = c.param("postype")?.trim()?.lowercase() ?: "p1"
-        val base = if (postype == "p2") enemyOf(e) else e
+        val (x0, y0, baseFacing) = explodOrigin(e, postype, px ?: 0.0, py ?: 0.0)
         val facingParam = num(c, "facing", ctx)?.toInt() ?: 1
-        val f = SimFx("explod", id, owner, anim, base.x + base.facing * (px ?: 0.0), base.y + (py ?: 0.0), vx ?: 0.0, vy ?: 0.0,
-            if (facingParam < 0) -base.facing else base.facing)
-        val rt = num(c, "removetime", ctx)?.toInt() ?: -2
-        f.left = rt
+        val f = SimFx("explod", id, owner, anim, x0, y0, vx ?: 0.0, vy ?: 0.0, if (facingParam < 0) -baseFacing else baseFacing)
+        f.ax = ax ?: 0.0
+        f.ay = ay ?: 0.0
+        f.postype = postype
+        f.left = num(c, "removetime", ctx)?.toInt() ?: -2
         val bt = num(c, "bindtime", ctx)?.toInt() ?: 1
-        if (bt != 0 && postype != "left" && postype != "right") { f.bindLeft = bt; f.bindDx = px ?: 0.0; f.bindDy = py ?: 0.0 }
+        if (bt != 0 && (postype == "p1" || postype == "p2")) {
+            f.bindLeft = bt; f.bindDx = px ?: 0.0; f.bindDy = py ?: 0.0
+            if (postype == "p2") f.bindToEnemy = true
+        }
         f.prio = num(c, "sprpriority", ctx)?.toInt() ?: 0
+        f.removeOnGetHit = (num(c, "removeongethit", ctx) ?: 0.0) != 0.0
+        f.pauseMove = maxOf(num(c, "supermovetime", ctx)?.toInt() ?: 0, num(c, "pausemovetime", ctx)?.toInt() ?: 0)
         fx += f
     }
 
@@ -759,12 +835,21 @@ class Sim(
         val id = num(c, "id", ctx)?.toInt()
         val owner = e.root ?: e
         val (px, py) = pair(c, "pos", ctx)
+        val (vx, vy) = pair(c, "vel", ctx)
+        val (ax, ay) = pair(c, "accel", ctx)
         for (f in fx) if (f.kind == "explod" && f.owner === owner && (id == null || f.id == id)) {
             parseAnimId(c.param("anim"), ctx)?.let { f.anim = it; f.animTick = 0 }
-            px?.let { f.x = owner.x + owner.facing * it; f.bindDx = it }
-            py?.let { f.y = owner.y + it; f.bindDy = it }
+            if (px != null || py != null) {
+                val (x0, y0, _) = explodOrigin(e, f.postype, px ?: f.bindDx, py ?: f.bindDy)
+                if (px != null) { f.x = x0; f.bindDx = px }
+                if (py != null) { f.y = y0; f.bindDy = py }
+            }
+            vx?.let { f.vx = it }; vy?.let { f.vy = it }
+            ax?.let { f.ax = it }; ay?.let { f.ay = it }
             num(c, "removetime", ctx)?.let { f.left = it.toInt() }
             num(c, "bindtime", ctx)?.let { f.bindLeft = it.toInt() }
+            num(c, "sprpriority", ctx)?.let { f.prio = it.toInt() }
+            num(c, "facing", ctx)?.toInt()?.let { f.facing = if (it < 0) -e.facing else e.facing }
         }
     }
 

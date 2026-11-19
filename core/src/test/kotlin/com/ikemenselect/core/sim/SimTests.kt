@@ -538,4 +538,86 @@ class SimTests {
         assertEquals(4.0, sim.debugEval(sim.root, "roundstate"))
         assertEquals(180, sim.root.state)
     }
+
+    @Test
+    fun hitOverrideSendsTheDefenderToItsStateInsteadOfTheHit() {
+        val sim = Sim(
+            book(
+                """
+                [Statedef 0]
+                ctrl = 1
+                [Statedef 1]
+                [State 1, o]
+                type = HitOverride
+                trigger1 = 1
+                attr = SCA, NA, SA
+                slot = 0
+                stateno = 700
+                time = 5
+                [Statedef 100]
+                anim = 200
+                [State 100, h]
+                type = HitDef
+                trigger1 = 1
+                attr = S, NA
+                damage = 50
+                p2stateno = 400
+                [Statedef 400]
+                [Statedef 700]
+                anim = 210
+                """,
+            ),
+            { air[it] },
+        )
+        sim.spawnRoot(-20.0, state = 100)
+        sim.spawnEnemy(20.0)
+        sim.enemyOverride(1)
+        sim.run(5)
+        assertEquals(700, sim.enemy.state)
+        assertEquals(1000, sim.enemy.life) // sem dano: o golpe foi ignorado
+    }
+
+    @Test
+    fun remapPalIsRecordedAndExplodPostypesAndAccelWork() {
+        val sim = Sim(
+            book(
+                """
+                [Statedef 0]
+                ctrl = 1
+                [Statedef 1]
+                [State 1, r]
+                type = RemapPal
+                trigger1 = 1
+                source = 1, 1
+                dest = 1, 3
+                [State 1, e]
+                type = Explod
+                trigger1 = !time
+                id = 5
+                anim = 210
+                postype = right
+                pos = -20, -10
+                accel = 0.5, 0
+                removetime = 3
+                supermovetime = 0
+                [State 1, f]
+                type = Explod
+                trigger1 = !time
+                id = 6
+                anim = F6068
+                removeongethit = 1
+                """,
+            ),
+            { air[it] },
+        )
+        sim.spawnRoot(0.0, state = 1)
+        sim.spawnEnemy(50.0)
+        sim.run(1)
+        assertEquals("1,3", sim.root.palRemaps["1,1"])
+        val e = sim.fx.first { it.id == 5 }
+        assertTrue(Math.abs(e.x - 140.0) < 1.0, "x=${e.x}") // borda direita da tela (160) - 20
+        assertEquals(1, sim.fx.count { it.id == 6 }) // animação do fightfx também é contada
+        sim.run(5)
+        assertEquals(0, sim.fx.count { it.id == 5 })
+    }
 }
