@@ -59,6 +59,10 @@ class Sim(
     val anims: (Int) -> Animation?,
     /** Comando "apertado" (para `command = "nome"`); null = nenhum. */
     var command: String? = null,
+    /** Roda os estados -3, -2 e -1 do P1 a cada tick (como o jogo): é por eles que o comando vira golpe e que os helpers nascem. */
+    val runNegative: Boolean = false,
+    /** Nome do personagem (`name = "..."` nos gatilhos dos helpers). */
+    val rootName: String = "P1",
 ) {
     val entities = ArrayList<SimEntity>()
     private val pending = ArrayList<SimEntity>()
@@ -114,6 +118,9 @@ class Sim(
 
     private fun log(s: String) { log += s }
 
+    /** Depuração: avalia uma expressão no contexto de [e] (null = não deu para saber). */
+    fun debugEval(e: SimEntity, text: String): Any? = Expr.eval(text, Ctx(e))
+
     // ------------------------------------------------------------------ estados
 
     private fun enter(e: SimEntity, no: Int, owner: SimEntity) {
@@ -153,6 +160,7 @@ class Sim(
                 e.bindTo?.let { b -> e.x = b.x + b.facing * e.bindDx; e.y = b.y + e.bindDy }
                 e.bindLeft--
             }
+            if (runNegative && e === root) runNegative(e)
             runState(e)
             e.x += e.vx * e.facing
             e.y += e.vy
@@ -168,6 +176,19 @@ class Sim(
     }
 
     fun run(ticks: Int) { repeat(ticks) { step() } }
+
+    private fun runNegative(e: SimEntity) {
+        for (no in intArrayOf(-3, -2, -1)) {
+            val def = book.states[no] ?: continue
+            val before = e.state
+            for (c in def.controllers.toList()) {
+                if (!e.alive) return
+                if (!fires(e, c)) continue
+                exec(e, c)
+                if (e.state != before) break // ChangeState: o resto deste Statedef não roda
+            }
+        }
+    }
 
     private fun runState(e: SimEntity) {
         var guard = 0
@@ -235,6 +256,12 @@ class Sim(
             "posadd" -> { num(c, "x", ctx)?.let { e.x += it * e.facing }; num(c, "y", ctx)?.let { e.y += it } }
             "velset" -> { num(c, "x", ctx)?.let { e.vx = it }; num(c, "y", ctx)?.let { e.vy = it } }
             "veladd" -> { num(c, "x", ctx)?.let { e.vx += it }; num(c, "y", ctx)?.let { e.vy += it } }
+            "ctrlset" -> num(c, "value", ctx)?.let { e.ctrl = it != 0.0 }
+            "statetypeset" -> {
+                c.param("statetype")?.trim()?.firstOrNull()?.uppercaseChar()?.let { if (it != 'U') e.stateType = it.toString() }
+                c.param("movetype")?.trim()?.firstOrNull()?.uppercaseChar()?.let { if (it != 'U') e.moveType = it.toString() }
+            }
+            "velmul" -> { num(c, "x", ctx)?.let { e.vx *= it }; num(c, "y", ctx)?.let { e.vy *= it } }
             "turn" -> e.facing = -e.facing
             "destroyself" -> e.alive = false
             "helper" -> {
@@ -386,9 +413,16 @@ class Sim(
                     entities.count { it.alive && it.root === r && (a0 == null || it.helperId == a0.toInt()) }.toDouble()
                 }
                 "numexplod", "numproj", "numprojid" -> 0.0
+                "ailevel", "isbound", "aicontrol", "win", "lose", "drawgame", "matchover", "hitover" -> if (name == "hitover") 1.0 else 0.0
+                "numenemy", "numpartner" -> 1.0
+                "roundno", "matchno" -> 1.0
+                "gethitvar" -> a0 ?: 0.0
+                "damage", "hittime", "hitshaketime", "slidetime", "ctrltime", "recovertime", "xoff", "yoff", "xvel", "yvel", "yaccel",
+                "hitid", "chainid", "guarded", "fall", "fall.damage", "fall.xvel", "fall.yvel", "fall.recover", "fall.time",
+                "fall.recovertime", "animtype", "groundtype", "airtype", "fallcount", "isbound" -> 0.0
                 "ishelper" -> if (a0 == null) b(e.isHelper) else b(e.helperId == a0.toInt())
                 "command" -> command
-                "name" -> e.name
+                "name" -> if (e === root) rootName else e.name
                 "random" -> random().toDouble()
                 "roundstate" -> 2.0
                 "gametime" -> tick.toDouble()
@@ -425,6 +459,24 @@ class Sim(
             }
             out += s.substring(from)
             return out
+        }
+
+        /**
+         * Luta real a partir de um comando: o P1 começa parado (estado 0), o comando [cmd] é apertado de [pressFrom] a
+         * [pressUntil] e os estados -3/-2/-1 decidem o que acontece. O adversário fica a [enemyDist] de distância.
+         */
+        fun fromCommand(
+            book: StateBook, anims: (Int) -> Animation?, cmd: String, ticks: Int = 400,
+            pressFrom: Int = 5, pressUntil: Int = 12, enemyDist: Double = 60.0, rootName: String = "P1",
+        ): Sim {
+            val sim = Sim(book, anims, runNegative = true, rootName = rootName)
+            sim.spawnRoot(0.0).ctrl = true // no jogo o controle vem do início do round
+            sim.spawnEnemy(enemyDist)
+            repeat(ticks) { t ->
+                sim.command = if (t in pressFrom until pressUntil) cmd else null
+                sim.step()
+            }
+            return sim
         }
 
         /**

@@ -169,4 +169,32 @@ class SimTests {
         assertTrue(s.log.any { it.contains("acerta") })
         assertTrue(kotlin.math.abs(s.root.x + 20 - s.enemy.x) < 0.001)
     }
+    @Test
+    fun commandInStateMinusOneStartsTheMoveAndMinusTwoSpawnsHelpers() {
+        val b = book(
+            """
+            [Statedef -2]
+            [State -2, h]
+            type = Helper
+            trigger1 = numhelper(9000) = 0
+            id = 9000
+            stateno = 200
+            [Statedef -1]
+            [State -1, m]
+            type = ChangeState
+            value = 300
+            triggerall = helper(9000), var(1) = 0 && ctrl
+            trigger1 = command = "golpe"
+            [Statedef 0]
+            [Statedef 200]
+            [Statedef 300]
+            anim = 210
+            """,
+        )
+        val s = Sim.fromCommand(b, { air[it] }, "golpe", ticks = 20)
+        assertEquals(300, s.root.state)
+        assertEquals(210, s.root.anim)
+        assertEquals(1, s.entities.count { it.helperId == 9000 })
+    }
+
 }
