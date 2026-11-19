@@ -725,6 +725,34 @@ class PlannerTests {
     }
 
     @Test
+    fun targetSelfAnimExistPicksTheStateForTheOpponentOnScreen() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, a]
+            type = TargetState
+            triggerall = target,selfanimexist(180) = 1
+            trigger1 = !time
+            value = 400
+            [State 300, b]
+            type = TargetState
+            triggerall = target,selfanimexist(180) = 0
+            trigger1 = !time
+            value = 401
+            [Statedef 400]
+            anim = 210
+            [Statedef 401]
+            anim = 800
+            """,
+        )
+        fun targets(set: Set<Int>?) =
+            MovePlanner.plan(b, 300, { animMap[it] }, PlanOptions(singleState = true, targetAnims = set))!!.targets.map { it.stateNo }
+        assertEquals(listOf(400), targets(setOf(180)))
+        assertEquals(listOf(401), targets(emptySet()))
+    }
+
+    @Test
     fun priorityOffsetAndImplicitBindFromTargetStates() {
         val b = book(
             """

@@ -93,6 +93,8 @@ class PlanOptions(
     /** Valores supostos de var(N) do próprio personagem e do dono (root) quando o estado roda num helper. O resto vale 0. */
     val vars: Map<Int, Int> = emptyMap(),
     val rootVars: Map<Int, Int> = emptyMap(),
+    /** Números das animações que o adversário em tela tem: resolve `target, selfanimexist(N)`. null = não sei. */
+    val targetAnims: Set<Int>? = null,
 )
 
 /**
@@ -428,7 +430,16 @@ object MovePlanner {
             }
         }
 
+        /** Adversário: só sabe quais animações ele tem (selfanimexist). */
+        private val targetCtx = object : ExprContext {
+            override fun ident(name: String, args: List<Any?>?): Any? {
+                val set = opts.targetAnims ?: return null
+                return if (name == "selfanimexist") (args?.getOrNull(0) as? Double)?.toInt()?.let { if (it in set) 1.0 else 0.0 } else null
+            }
+        }
+
         override fun redirect(name: String, args: List<Any?>?): ExprContext? = when (name) {
+            "target", "enemy", "enemynear" -> if (opts.targetAnims != null) targetCtx else null
             "root", "parent" -> if (opts.asHelper) rootCtx else this
             else -> null
         }

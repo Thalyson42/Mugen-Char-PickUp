@@ -432,7 +432,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                                 if (atkId == Owner.P1) play1 = p else play2 = p
                                 return@launch
                             }
-                            val plan = viewer.planMove(c, id, assumeHit = other != null, entry = btn.entry)
+                            val plan = viewer.planMove(c, id, assumeHit = other != null, entry = btn.entry, target = other)
                             if (plan == null || plan.steps.isEmpty()) {
                                 note = "Esse estado não tem animação para mostrar."
                                 return@launch
