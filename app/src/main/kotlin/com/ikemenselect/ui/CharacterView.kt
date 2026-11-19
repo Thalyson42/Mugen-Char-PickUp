@@ -60,6 +60,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import com.ikemenselect.core.AnimNames
@@ -134,6 +136,7 @@ private fun fireSounds(viewer: ViewerViewModel, plays: List<SoundPlay>, clock: F
     for (sp in plays) {
         val now = clock - sp.start
         if (now < sp.last) continue
+        if (now - sp.last > 30f) { sp.last = now; continue } // salto grande (voltou do segundo plano): não toca tudo de uma vez
         for (e in sp.events) {
             val t = e.tick.toFloat()
             if (!sp.repeat || sp.period <= 0) {
@@ -141,7 +144,7 @@ private fun fireSounds(viewer: ViewerViewModel, plays: List<SoundPlay>, clock: F
             } else {
                 val first = Math.floor(((sp.last - t) / sp.period).toDouble()).toInt() + 1
                 val lastK = Math.floor(((now - t) / sp.period).toDouble()).toInt()
-                for (k in maxOf(first, 0)..lastK) viewer.playSound(sp.ownerId, e.ref)
+                if (lastK >= maxOf(first, 0)) viewer.playSound(sp.ownerId, e.ref) // no máximo um por verificação
             }
         }
         sp.last = now
@@ -265,12 +268,18 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
     val soundPlays = remember { ArrayList<SoundPlay>() }
     val scope = rememberCoroutineScope()
 
+    // saiu da tela (apps recentes, outro app, bloqueio): pausa e cala tudo, para o som não ficar preso
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+        paused = true
+        soundPlays.clear()
+        viewer.stopSounds()
+    }
     LaunchedEffect(paused, speed) {
         if (paused) return@LaunchedEffect
         var last = withFrameNanos { it }
         while (true) {
             val now = withFrameNanos { it }
-            clock += (now - last) / 1_000_000_000f * 60f * speed
+            clock += ((now - last) / 1_000_000_000f).coerceAtMost(0.1f) * 60f * speed
             last = now
             if (soundOn && soundPlays.isNotEmpty()) fireSounds(viewer, soundPlays, clock)
         }

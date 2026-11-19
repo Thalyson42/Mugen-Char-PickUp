@@ -9,9 +9,14 @@ import com.ikemenselect.core.Pcm
 class SoundPlayer {
 
     private val active = ArrayList<AudioTrack>()
+    private val lastStart = HashMap<Pcm, Long>()
 
     fun play(pcm: Pcm) {
         if (pcm.data.isEmpty()) return
+        // o mesmo som não recomeça em menos de 60 ms: evita pilha de cópias iguais (ruído estourado)
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        if (nowMs - (lastStart[pcm] ?: -1000L) < 60) return
+        lastStart[pcm] = nowMs
         try {
             val track = AudioTrack.Builder()
                 .setAudioAttributes(
@@ -39,6 +44,7 @@ class SoundPlayer {
             })
             // muitos sons ao mesmo tempo: descarta o mais antigo
             if (active.size >= MAX_ACTIVE) release(active.first())
+            track.setVolume(0.7f)
             active.add(track)
             track.play()
         } catch (e: Exception) {
@@ -57,6 +63,6 @@ class SoundPlayer {
     }
 
     private companion object {
-        const val MAX_ACTIVE = 12
+        const val MAX_ACTIVE = 6
     }
 }
