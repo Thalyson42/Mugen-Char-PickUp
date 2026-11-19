@@ -81,6 +81,10 @@ class Sim(
     val rootName: String = "P1",
     /** true = o HitDef só acerta quando as caixas Clsn1 do atacante tocam as Clsn2 do alvo; false = acerto forçado. */
     val collide: Boolean = false,
+    /** Constantes do personagem (`size.xscale`, `movement.yaccel`...), de [parseConsts]. */
+    val consts: Map<String, Double> = emptyMap(),
+    /** Altura da coordenada local do personagem (para `const720p` etc.). */
+    val coordY: Double = 240.0,
 ) {
     val entities = ArrayList<SimEntity>()
     private val pending = ArrayList<SimEntity>()
@@ -96,7 +100,7 @@ class Sim(
     val fx = ArrayList<SimFx>()
 
     /** Aceleração vertical da gravidade (padrão do M.U.G.E.N quando o personagem não diz outra). */
-    var yaccel = 0.44
+    var yaccel = consts["movement.yaccel"] ?: 0.44
     private var pauseLeft = 0
     private var pauseMoveLeft = 0
     private var pauser: SimEntity? = null
@@ -642,6 +646,29 @@ class Sim(
                 "floor" -> a0?.let { Math.floor(it) }
                 "ceil" -> a0?.let { Math.ceil(it) }
                 "sin" -> a0?.let { Math.sin(it) }
+                "tan" -> a0?.let { Math.tan(it) }
+                "asin" -> a0?.let { Math.asin(it) }
+                "acos" -> a0?.let { Math.acos(it) }
+                "atan" -> a0?.let { Math.atan(it) }
+                "ln" -> a0?.let { Math.log(it) }
+                "exp" -> a0?.let { Math.exp(it) }
+                "log" -> (args?.getOrNull(1) as? Double)?.let { x -> a0?.let { Math.log(x) / Math.log(it) } }
+                "pi" -> Math.PI
+                "id" -> e.uid.toDouble()
+                "animelem" -> cur?.let {
+                    val i = it.frameIndexAt(elapsed, loop = true)
+                    val total = it.totalTicks
+                    val t = if (it.infinite || total <= 0) elapsed else elapsed % total
+                    if (i >= 0 && it.frameStart(i) == t) (i + 1).toDouble() else -1.0
+                }
+                "parentdist.x" -> e.parent?.let { (it.x - e.x) * e.facing }
+                "parentdist.y" -> e.parent?.let { it.y - e.y }
+                "rootdist.x" -> (e.root ?: e).let { (it.x - e.x) * e.facing }
+                "rootdist.y" -> (e.root ?: e).let { it.y - e.y }
+                "const720p" -> a0?.let { it * coordY / 720.0 }
+                "const480p" -> a0?.let { it * coordY / 480.0 }
+                "const240p" -> a0?.let { it * coordY / 240.0 }
+                "const1080p" -> a0?.let { it * coordY / 1080.0 }
                 "cos" -> a0?.let { Math.cos(it) }
                 "p2dist.x", "p2bodydist.x", "enemydist.x", "enemybodydist.x" -> (enemyOf(e).x - e.x) * e.facing
                 "p2dist.y", "p2bodydist.y", "enemydist.y", "enemybodydist.y" -> enemyOf(e).y - e.y
@@ -652,7 +679,7 @@ class Sim(
                 "screenheight" -> 240.0
                 "screenwidth" -> 320.0
                 "backedgebodydist", "frontedgebodydist", "backedgedist", "frontedgedist" -> 100.0
-                else -> if (name.startsWith("size.")) 1.0 else unk(name)
+                else -> consts[name] ?: defaultConsts[name] ?: if (name.startsWith("size.")) 1.0 else unk(name)
             }
         }
 
@@ -663,6 +690,40 @@ class Sim(
     }
 
     companion object {
+        /** Valores padrão do M.U.G.E.N/Ikemen GO para constantes que o personagem não define (vêm do common1). */
+        val defaultConsts = mapOf(
+            "movement.stand.friction.threshold" to 2.0,
+            "movement.crouch.friction.threshold" to 0.05,
+            "movement.air.gethit.groundlevel" to 25.0,
+            "movement.air.gethit.groundrecover.ground.threshold" to -20.0,
+            "movement.air.gethit.groundrecover.groundlevel" to 10.0,
+            "movement.air.gethit.airrecover.threshold" to -1.0,
+            "movement.air.gethit.airrecover.yaccel" to 0.35,
+            "movement.down.bounce.offset.x" to 0.0, "movement.down.bounce.offset.y" to 20.0,
+            "movement.down.bounce.yaccel" to 0.4, "movement.down.bounce.groundlevel" to 12.0,
+            "movement.down.friction.threshold" to 0.05,
+        )
+
+        /**
+         * Lê as constantes de [Data], [Size], [Velocity], [Movement] e [Quotes] dos .cns: `size.xscale`, `movement.yaccel`...
+         * Valores com vírgula viram `nome` (primeiro), `nome.x` e `nome.y`.
+         */
+        fun parseConsts(texts: List<String>): Map<String, Double> {
+            val out = HashMap<String, Double>()
+            for (text in texts) for (sec in com.ikemenselect.core.Ini.parse(text)) {
+                val sn = sec.name.trim().lowercase()
+                if (sn !in setOf("data", "size", "velocity", "movement")) continue
+                for ((k, v) in sec.entries) {
+                    val key = "$sn.${k.trim().lowercase()}"
+                    val parts = v.split(',').map { it.trim().toDoubleOrNull() }
+                    parts.getOrNull(0)?.let { out[key] = it }
+                    parts.getOrNull(0)?.let { out["$key.x"] = it }
+                    parts.getOrNull(1)?.let { out["$key.y"] = it }
+                }
+            }
+            return out
+        }
+
         /** Divide por vírgulas fora de parênteses. */
         fun splitTop(s: String): List<String> {
             val out = ArrayList<String>()
@@ -682,8 +743,9 @@ class Sim(
         fun fromCommand(
             book: StateBook, anims: (Int) -> Animation?, cmd: String, ticks: Int = 400,
             pressFrom: Int = 5, pressUntil: Int = 12, enemyDist: Double = 60.0, rootName: String = "P1",
+            consts: Map<String, Double> = emptyMap(),
         ): Sim {
-            val sim = Sim(book, anims, runNegative = true, rootName = rootName, collide = true)
+            val sim = Sim(book, anims, runNegative = true, rootName = rootName, collide = true, consts = consts)
             sim.spawnRoot(0.0).ctrl = true // no jogo o controle vem do início do round
             sim.spawnEnemy(enemyDist)
             repeat(ticks) { t ->

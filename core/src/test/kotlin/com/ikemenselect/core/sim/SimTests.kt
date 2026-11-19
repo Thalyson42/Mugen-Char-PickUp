@@ -296,4 +296,31 @@ class SimTests {
         assertTrue(s.enemy.time <= 1, "o adversário ficou parado")
         assertTrue(s.root.time >= 6, "quem pausou continua andando")
     }
+
+    @Test
+    fun constantsMathAndDistancesAreUnderstood() {
+        val consts = Sim.parseConsts(listOf("[Size]\nxscale = 0.5\n[Movement]\nyaccel = .5\n[Velocity]\nrun.fwd = 4.6, 0\n"))
+        assertEquals(0.5, consts["size.xscale"])
+        assertEquals(4.6, consts["velocity.run.fwd.x"])
+        val sim = Sim(book("[Statedef 0]\nanim = 0\n"), { air[it] }, consts = consts)
+        sim.spawnRoot(0.0)
+        sim.spawnEnemy(30.0)
+        assertEquals(0.5, sim.yaccel)
+        assertEquals(0.5, sim.debugEval(sim.root, "const(size.xscale)"))
+        assertEquals(Math.PI, sim.debugEval(sim.root, "pi"))
+        assertEquals(0.0, (sim.debugEval(sim.root, "atan(0)") as Double))
+        assertEquals(1.0, sim.debugEval(sim.root, "const720p(720) / 240 * 240 / 240"))
+        assertTrue(sim.unknown.isEmpty(), "desconhecidos: ${sim.unknown}")
+    }
+
+    @Test
+    fun animElemTriggersOnlyAtTheStartOfTheElement() {
+        val sim = Sim(book("[Statedef 0]\nanim = 0\n"), { air[it] })
+        sim.spawnRoot(0.0)
+        assertEquals(1.0, sim.debugEval(sim.root, "animelem"))   // tick 0 = início do elemento 1
+        sim.run(2)
+        assertEquals(-1.0, sim.debugEval(sim.root, "animelem"))
+        sim.run(3)  // o primeiro passo do estado recém-criado não avança a animação
+        assertEquals(2.0, sim.debugEval(sim.root, "animelem"))   // elemento 2 começa no tick 4
+    }
 }
