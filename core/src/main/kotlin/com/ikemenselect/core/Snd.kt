@@ -26,9 +26,13 @@ object Wav {
                 bits = u16(b, body + 14)
                 pcm = tag == 1 || tag == 0xFFFE
             } else if (id == "data") {
-                if (!pcm || channels !in 1..2 || rate <= 0 || (bits != 8 && bits != 16)) return null
-                val end = minOf(b.size.toLong(), body + len).toInt()
-                return Pcm(channels, rate, bits, b.copyOfRange(body, end))
+                if (!pcm || channels !in 1..2 || rate !in 4000..192000 || (bits != 8 && bits != 16)) return null
+                // só quadros inteiros (o AudioTrack recusa o resto) e um teto de 8 MB por som
+                val frame = channels * bits / 8
+                var size = (minOf(b.size.toLong(), body + len) - body).toInt()
+                size -= size % frame
+                if (size <= 0 || size > 8 * 1024 * 1024) return null
+                return Pcm(channels, rate, bits, b.copyOfRange(body, body + size))
             }
             p = (body + len + (len and 1L)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         }

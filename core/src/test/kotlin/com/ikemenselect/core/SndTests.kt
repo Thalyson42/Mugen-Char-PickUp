@@ -42,6 +42,14 @@ class SndTests {
     }
 
     @Test
+    fun wavTrimsPartialFramesAndRejectsAbsurdRates() {
+        val p = Wav.parse(wav(byteArrayOf(1, 0, 2, 0, 3)))!! // 16 bits, mono: sobra 1 byte
+        assertEquals(4, p.data.size)
+        assertNull(Wav.parse(wav(byteArrayOf(1, 0, 2, 0), rate = 3)))
+        assertNull(Wav.parse(wav(byteArrayOf(1, 0, 2, 0), rate = 5_000_000)))
+    }
+
+    @Test
     fun wavParsesPcm16() {
         val p = Wav.parse(wav(byteArrayOf(1, 0, 2, 0)))!!
         assertEquals(1, p.channels); assertEquals(22050, p.sampleRate); assertEquals(16, p.bits); assertEquals(4, p.data.size)
