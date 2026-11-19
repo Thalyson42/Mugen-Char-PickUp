@@ -90,6 +90,9 @@ class PlanOptions(
     val singleState: Boolean = false,
     /** Id do helper que roda o estado: `ishelper(N)` só vale quando N é este id. null = qualquer id vale. */
     val helperId: Int? = null,
+    /** Valores supostos de var(N) do próprio personagem e do dono (root) quando o estado roda num helper. O resto vale 0. */
+    val vars: Map<Int, Int> = emptyMap(),
+    val rootVars: Map<Int, Int> = emptyMap(),
 )
 
 /**
@@ -416,6 +419,20 @@ object MovePlanner {
 
         private val symbols = setOf("a", "s", "c", "l", "i", "h", "u", "n", "f")
 
+        /** Contexto do dono: só sabe as variáveis supostas (`root, var(27)`). */
+        private val rootCtx = object : ExprContext {
+            override fun ident(name: String, args: List<Any?>?): Any? = when (name) {
+                "var" -> opts.rootVars[(args?.getOrNull(0) as? Double)?.toInt()]?.toDouble() ?: 0.0
+                "fvar", "sysvar", "sysfvar" -> 0.0
+                else -> null
+            }
+        }
+
+        override fun redirect(name: String, args: List<Any?>?): ExprContext? = when (name) {
+            "root", "parent" -> if (opts.asHelper) rootCtx else this
+            else -> null
+        }
+
         override fun ident(name: String, args: List<Any?>?): Any? {
             if (args == null && name in symbols) return name.uppercase()
             val cur = anims(anim)
@@ -459,7 +476,8 @@ object MovePlanner {
                 "p2bodydist.x", "p2bodydist", "enemybodydist.x", "enemybodydist" -> if (opts.assumeHit) 10.0 else null
                 "p2dist.x", "p2dist", "enemydist.x", "enemydist" -> if (opts.assumeHit) 40.0 else null
                 "p2bodydist.y", "p2dist.y", "enemybodydist.y", "enemydist.y" -> if (opts.assumeHit) 0.0 else null
-                "var", "fvar", "sysvar", "sysfvar" -> 0.0
+                "var" -> opts.vars[(args?.getOrNull(0) as? Double)?.toInt()]?.toDouble() ?: 0.0
+                "fvar", "sysvar", "sysfvar" -> 0.0
                 "movehit", "movecontact" -> if (opts.assumeHit) 1.0 else 0.0
                 "moveguarded" -> 0.0
                 "numtarget" -> if (opts.assumeHit) 1.0 else 0.0

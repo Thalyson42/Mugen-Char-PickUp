@@ -8,6 +8,9 @@ package com.ikemenselect.core
 interface ExprContext {
     /** Valor de um identificador ou função (nome em minúsculas). null = não sei. */
     fun ident(name: String, args: List<Any?>?): Any?
+
+    /** Contexto de outro personagem para `root, ...`, `target, ...`, `helper(id), ...`. null = não sei. */
+    fun redirect(name: String, args: List<Any?>?): ExprContext? = null
 }
 
 object Expr {
@@ -18,6 +21,7 @@ object Expr {
     private class Id(val name: String, val args: List<Node>?) : Node
     private class Un(val op: String, val a: Node) : Node
     private class Bin(val op: String, val l: Node, val r: Node) : Node
+    private class Redir(val name: String, val args: List<Node>?, val inner: Node) : Node
     private class Interval(val negate: Boolean, val l: Node, val lo: Node, val hi: Node, val loOpen: Boolean, val hiOpen: Boolean) : Node
 
     private val cache = HashMap<String, Node?>()
@@ -62,6 +66,7 @@ object Expr {
             val args = n.args?.map { ev(it, c) }
             c.ident(n.name, args)
         }
+        is Redir -> c.redirect(n.name, n.args?.map { ev(it, c) })?.let { ev(n.inner, it) }
         is Un -> {
             val a = ev(n.a, c)
             when (n.op) {
@@ -180,6 +185,8 @@ object Expr {
         return out
     }
 
+    private val redirects = setOf("root", "parent", "target", "enemy", "enemynear", "partner", "helper", "playerid")
+
     private class Parser(val t: List<Tok>) {
         var p = 0
         fun peek(): Tok? = t.getOrNull(p)
@@ -275,6 +282,13 @@ object Expr {
             }
             return primary()
         }
+        /** `root, var(27)`: o nome de redirecionamento seguido de vírgula e da expressão avaliada no outro personagem. */
+        fun redirected(name: String, args: List<Node>?): Node? {
+            if (name !in redirects || !isOp(",")) return null
+            p++
+            val inner = primary() ?: return null
+            return Redir(name, args, inner)
+        }
         fun primary(): Node? {
             val k = peek() ?: return null
             when (k.kind) {
@@ -293,9 +307,9 @@ object Expr {
                             }
                         }
                         if (!eat(")")) return null
-                        return Id(k.text, args)
+                        return redirected(k.text, args) ?: Id(k.text, args)
                     }
-                    return Id(k.text, null)
+                    return redirected(k.text, null) ?: Id(k.text, null)
                 }
                 'o' -> {
                     if (k.text == "(") {

@@ -218,7 +218,7 @@ private fun ChipImage(res: Int, description: String, tint: Boolean = true) {
     )
 }
 
-private class BtnItem(val id: Int, val label: String, val group: String, val helperId: Int? = null)
+private class BtnItem(val id: Int, val label: String, val group: String, val entry: CatalogEntry? = null)
 
 private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
     catalog.map { e ->
@@ -233,7 +233,7 @@ private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
             e.helper -> "Helpers"
             else -> AnimNames.group(e.stateNo)
         }
-        BtnItem(e.stateNo, label, group, e.helperId)
+        BtnItem(e.stateNo, label, group, e)
     }
 
 private fun buildAnims(c: LoadedChar): List<BtnItem> =
@@ -423,7 +423,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                                 if (atkId == Owner.P1) play1 = p else play2 = p
                                 return@launch
                             }
-                            val plan = viewer.planMove(c, id, assumeHit = other != null, helperId = btn.helperId)
+                            val plan = viewer.planMove(c, id, assumeHit = other != null, entry = btn.entry)
                             if (plan == null || plan.steps.isEmpty()) {
                                 note = "Esse estado não tem animação para mostrar."
                                 return@launch

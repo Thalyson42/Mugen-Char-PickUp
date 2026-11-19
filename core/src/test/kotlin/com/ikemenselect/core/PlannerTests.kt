@@ -669,6 +669,62 @@ class PlannerTests {
     }
 
     @Test
+    fun varComparedInTheCharacterSplitsTheMoveByValue() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = cond(var(27) = 5, 200, 201)
+            """,
+        )
+        val es = MoveCatalog.build(b, isolated = true) { animMap[it] }.filter { it.stateNo == 300 }
+        assertEquals(2, es.size)
+        assertEquals(listOf(201, 200), es.map { it.plan.steps.first().anim })
+        assertEquals(listOf(0, 5), es.map { it.vars[27] })
+    }
+
+    @Test
+    fun rootVarIsReadFromTheOwnerWhenTheStateRunsInAHelper() {
+        val b = book(
+            """
+            [Statedef 100]
+            [State 100, h]
+            type = Helper
+            trigger1 = 1
+            id = 3000
+            stateno = 300
+            [Statedef 300]
+            anim = cond(root,var(27) = 6, 200, 201)
+            """,
+        )
+        val es = MoveCatalog.build(b, isolated = true) { animMap[it] }.filter { it.stateNo == 300 }
+        assertEquals(listOf(201, 200), es.map { it.plan.steps.first().anim })
+        assertEquals(listOf(0, 6), es.map { it.rootVars[27] })
+    }
+
+    @Test
+    fun valueCopiedFromAVarUsesTheLiteralsTheStateWritesIntoIt() {
+        val b = book(
+            """
+            [Statedef 300]
+            anim = 200
+            [State 300, v]
+            type = VarSet
+            trigger1 = 1
+            v = 2
+            value = 400
+            [State 300, t]
+            type = TargetState
+            trigger1 = !time
+            value = var(2)
+            [Statedef 400]
+            anim = 210
+            """,
+        )
+        val es = MoveCatalog.build(b, isolated = true) { animMap[it] }.filter { it.stateNo == 300 }
+        assertTrue(es.any { e -> e.plan.targets.any { it.stateNo == 400 } })
+    }
+
+    @Test
     fun priorityOffsetAndImplicitBindFromTargetStates() {
         val b = book(
             """
