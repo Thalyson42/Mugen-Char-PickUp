@@ -419,4 +419,68 @@ class SimTests {
         assertEquals(1.0, sim.debugEval(sim.root, "enemynear,hitdefattr != SCA, AA, AP"))
         assertTrue(sim.unknown.isEmpty(), "desconhecidos: ${sim.unknown}")
     }
+
+    private val hitBook = """
+        [Statedef 0]
+        ctrl = 1
+        anim = 0
+        [Statedef 100]
+        anim = 200
+        [State 100, h]
+        type = HitDef
+        trigger1 = 1
+        damage = 40, 10
+        guardflag = MA
+        hitflag = MAF
+        p2stateno = 400
+        pausetime = 0, 0
+        givepower = 20, 5
+        getpower = 30, 8
+        [Statedef 150]
+        anim = 210
+        [Statedef 400]
+        anim = 220
+    """
+
+    @Test
+    fun damageAndPowerAreApplied() {
+        val s = forced(hitBook, 100, ticks = 5)
+        assertEquals(960, s.enemy.life)
+        assertEquals(20, s.enemy.power)
+        assertEquals(30, s.root.power)
+        val sim = Sim(book("[Statedef 0]\nanim = 0\n[Statedef 1]\n[State 1, a]\ntype = LifeAdd\ntrigger1 = 1\nvalue = -50\n[State 1, p]\ntype = PowerAdd\ntrigger1 = 1\nvalue = 100\n"), { air[it] })
+        sim.spawnRoot(0.0, state = 1)
+        sim.run(1)
+        assertEquals(950, sim.root.life)
+        assertEquals(100, sim.root.power)
+    }
+
+    @Test
+    fun guardingEnemyGoesToGuardStateWithReducedDamage() {
+        val sim = Sim(book(hitBook), { air[it] })
+        sim.enemyMode = "guard"
+        sim.spawnRoot(-70.0, state = 100)
+        sim.spawnEnemy(70.0)
+        sim.run(5)
+        assertEquals(150, sim.enemy.state)
+        assertEquals(990, sim.enemy.life) // dano de defesa = 10
+        assertEquals(1.0, sim.debugEval(sim.enemy, "gethitvar(guarded)"))
+        assertEquals(1.0, sim.debugEval(sim.root, "moveguarded"))
+    }
+
+    @Test
+    fun attackingEnemyHitsTheFirstPlayer() {
+        val sim = Sim(book(hitBook), { air[it] })
+        sim.enemyMode = "attack"
+        sim.enemyAttackState = 100
+        sim.enemyAttackEvery = 10
+        sim.spawnRoot(-70.0)
+        sim.spawnEnemy(70.0)
+        sim.run(5)
+        assertEquals(0, sim.root.state)
+        assertEquals(1.0, sim.debugEval(sim.root, "p2movetype = I || p2movetype = A"))
+        sim.run(20)
+        assertEquals(400, sim.root.state)
+        assertEquals(960, sim.root.life)
+    }
 }

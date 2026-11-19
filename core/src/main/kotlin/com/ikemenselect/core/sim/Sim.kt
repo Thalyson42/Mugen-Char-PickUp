@@ -56,8 +56,17 @@ class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: 
     val persist = HashMap<Controller, Int>()
     var posFrozen = false
 
+    /** Física do estado: S (chão, atrito), C (agachado), A (ar, gravidade), N (nenhuma). */
+    var physics = "N"
+
     /** Ticks parado por acerto (pausa do golpe / tremor de quem apanha). */
     var hitPause = 0
+
+    var life = 1000
+    var lifeMax = 1000
+    var power = 0
+    var powerMax = 3000
+    var moveGuarded = false
 
     /** Valores que `gethitvar(...)` devolve: preenchidos quando o HitDef acerta. */
     val gh = HashMap<String, Double>()
@@ -119,6 +128,13 @@ class Sim(
 
     /** Aceleração vertical da gravidade (padrão do M.U.G.E.N quando o personagem não diz outra). */
     var yaccel = consts["movement.yaccel"] ?: 0.44
+    /**
+     * Comportamento do adversário: "idle" (parado), "guard" (defende o que o `guardflag` do golpe cobre) ou "attack"
+     * (a cada [enemyAttackEvery] ticks, parado e com controle, entra em [enemyAttackState]).
+     */
+    var enemyMode = "idle"
+    var enemyAttackState: Int? = null
+    var enemyAttackEvery = 120
     private var pauseLeft = 0
     private var pauseMoveLeft = 0
     private var pauser: SimEntity? = null
@@ -149,6 +165,7 @@ class Sim(
         entities += e
         enemy = e
         enter(e, 0, e)
+        e.ctrl = true
         return e
     }
 
@@ -227,10 +244,13 @@ class Sim(
         e.hitDef = null
         e.hitDone = false
         e.moveHit = false
+        e.moveGuarded = false
         val def = book.states[no] ?: return
         val ctx = Ctx(e)
         def.props["type"]?.trim()?.firstOrNull()?.uppercaseChar()?.let { if (it != 'U') e.stateType = it.toString() }
         def.props["movetype"]?.trim()?.firstOrNull()?.uppercaseChar()?.let { if (it != 'U') e.moveType = it.toString() }
+        def.props["physics"]?.trim()?.firstOrNull()?.uppercaseChar()?.let { e.physics = if (it == 'U') e.physics else it.toString() }
+        def.props["poweradd"]?.let { s -> (Expr.eval(s, ctx) as? Double)?.let { e.power = (e.power + it.toInt()).coerceIn(0, e.powerMax) } }
         def.props["ctrl"]?.let { s -> (Expr.eval(s, ctx) as? Double)?.let { e.ctrl = it != 0.0 } }
         def.props["sprpriority"]?.let { s -> (Expr.eval(s, ctx) as? Double)?.let { e.sprPriority = it.toInt() } }
         def.props["velset"]?.let { s ->
@@ -246,6 +266,12 @@ class Sim(
     // ------------------------------------------------------------------ passo
 
     fun step() {
+        if (enemyMode == "attack" && enemyAttackState != null && enemy.alive && enemy.state == 0 && enemy.ctrl &&
+            enemy.hitPause <= 0 && tick > 0 && tick % enemyAttackEvery == 0
+        ) {
+            log("t=$tick ${enemy.name} ataca: estado $enemyAttackState")
+            enter(enemy, enemyAttackState!!, enemy)
+        }
         val paused = pauseLeft > 0
         val pauserMoves = paused && pauseMoveLeft > 0
         if (paused) { pauseLeft--; if (pauseMoveLeft > 0) pauseMoveLeft-- }
@@ -261,7 +287,14 @@ class Sim(
             e.posFrozen = false
             if (runNegative && e === root) runNegative(e)
             runState(e)
-            if (!e.posFrozen) { e.x += e.vx * e.facing; e.y += e.vy }
+            if (!e.posFrozen) {
+                when (e.physics) {
+                    "S" -> e.vx *= consts["movement.stand.friction"] ?: 0.85
+                    "C" -> e.vx *= consts["movement.crouch.friction"] ?: 0.82
+                    "A" -> e.vy += yaccel
+                }
+                e.x += e.vx * e.facing; e.y += e.vy
+            }
         }
         if (!paused) stepFx()
         resolveHits()
@@ -459,6 +492,14 @@ class Sim(
             "movehitreset" -> { e.moveHit = false; e.hitDone = false }
             "targetvelset" -> for (t in e.targets) if (t.alive) { num(c, "x", ctx)?.let { t.vx = it }; num(c, "y", ctx)?.let { t.vy = it } }
             "targetveladd" -> for (t in e.targets) if (t.alive) { num(c, "x", ctx)?.let { t.vx += it }; num(c, "y", ctx)?.let { t.vy += it } }
+            "lifeadd" -> num(c, "value", ctx)?.let { lifeChange(e, it.toInt(), kill = (num(c, "kill", ctx) ?: 1.0) != 0.0, absolute = (num(c, "absolute", ctx) ?: 0.0) != 0.0) }
+            "lifeset" -> num(c, "value", ctx)?.let { e.life = it.toInt().coerceIn(0, e.lifeMax) }
+            "poweradd" -> num(c, "value", ctx)?.let { e.power = (e.power + it.toInt()).coerceIn(0, e.powerMax) }
+            "powerset" -> num(c, "value", ctx)?.let { e.power = it.toInt().coerceIn(0, e.powerMax) }
+            "targetlifeadd" -> num(c, "value", ctx)?.let { v ->
+                for (t in e.targets) if (t.alive) lifeChange(t, v.toInt(), kill = (num(c, "kill", ctx) ?: 1.0) != 0.0, absolute = (num(c, "absolute", ctx) ?: 0.0) != 0.0)
+            }
+            "targetpoweradd" -> num(c, "value", ctx)?.let { v -> for (t in e.targets) if (t.alive) t.power = (t.power + v.toInt()).coerceIn(0, t.powerMax) }
             "explod" -> makeExplod(e, c, ctx)
             "modifyexplod" -> modifyExplod(e, c, ctx)
             "removeexplod" -> {
@@ -508,6 +549,7 @@ class Sim(
     private fun applyHit(src: SimEntity, d: SimEntity, hd: HitDefData, srcFacing: Int, byProjectile: Boolean) {
         if (d !in src.targets) src.targets += d
         val air = d.stateType == "A"
+        if (enemyMode == "guard" && d === enemy && guardCovers(hd, d)) { applyGuard(src, d, hd, srcFacing, byProjectile); return }
         val vel = hd.nums[if (air) "air.velocity" else "ground.velocity"].orEmpty()
         val fallVel = hd.nums["fall.xvel"]?.getOrNull(0) to hd.nums["fall.yvel"]?.getOrNull(0)
         val pause = hd.nums["pausetime"].orEmpty()
@@ -541,7 +583,49 @@ class Sim(
             hd.p1stateno?.takeIf { it >= 0 }?.let { enter(src, it, src) }
             src.moveHit = true; src.hitDone = true
         }
+        applyDamage(src, d, hd, guarded = false)
         // pausa do golpe: o atacante para pausetime[0] ticks; quem apanha, pausetime[1]
+        src.hitPause = if (byProjectile) 0 else (pause.getOrNull(0)?.toInt() ?: 0).coerceIn(0, 60)
+        d.hitPause = (pause.getOrNull(1)?.toInt() ?: 0).coerceIn(0, 60)
+    }
+
+    /** O `guardflag` do golpe cobre o estado do defensor (H/M/L no chão, A no ar)? */
+    private fun guardCovers(hd: HitDefData, d: SimEntity): Boolean {
+        val f = hd.strs["guardflag"]?.uppercase()?.filter { it.isLetter() } ?: return false
+        return if (d.stateType == "A") 'A' in f else ('H' in f || 'M' in f || 'L' in f)
+    }
+
+    /** Dano e poder do acerto (padrões aproximados: quem bate ganha 70% do dano em poder, quem apanha 60%; na defesa, a metade). */
+    private fun applyDamage(src: SimEntity, d: SimEntity, hd: HitDefData, guarded: Boolean) {
+        val i = if (guarded) 1 else 0
+        val dmg = hd.n("damage", i) ?: 0.0
+        val kill = (hd.n(if (guarded) "guard.kill" else "kill") ?: 1.0) != 0.0
+        d.life = (d.life - dmg.toInt()).coerceAtLeast(if (kill) 0 else 1)
+        val k = if (guarded) 0.5 else 1.0
+        val hitDmg = hd.n("damage") ?: 0.0
+        val get = hd.n("getpower", i) ?: (hitDmg * 0.7 * k)
+        val give = hd.n("givepower", i) ?: (hitDmg * 0.6 * k)
+        src.power = (src.power + get.toInt()).coerceIn(0, src.powerMax)
+        d.power = (d.power + give.toInt()).coerceIn(0, d.powerMax)
+    }
+
+    /** O adversário defende: estados de defesa (150/151/152), dano reduzido, sem `p2stateno` nem `p1stateno`. */
+    private fun applyGuard(src: SimEntity, d: SimEntity, hd: HitDefData, srcFacing: Int, byProjectile: Boolean) {
+        val pause = hd.nums["guard.pausetime"] ?: hd.nums["pausetime"].orEmpty()
+        d.gh.clear()
+        d.gh["guarded"] = 1.0
+        d.gh["damage"] = hd.n("damage", 1) ?: 0.0
+        d.gh["xvel"] = hd.n("guard.velocity") ?: 0.0
+        d.gh["hitshaketime"] = pause.getOrNull(1) ?: 0.0
+        d.gh["hittime"] = hd.n("guard.hittime") ?: hd.n("guard.slidetime") ?: 0.0
+        d.gh["ctrltime"] = hd.n("guard.ctrltime") ?: 0.0
+        d.gh["animtype"] = animTypes[hd.strs["animtype"]?.lowercase() ?: "light"] ?: 0.0
+        d.facing = -srcFacing
+        val std = when (d.stateType) { "C" -> 151; "A" -> 152; else -> 150 }
+        log("t=$tick ${d.name} defende: estado $std")
+        if (book.states[std] != null) enter(d, std, d)
+        applyDamage(src, d, hd, guarded = true)
+        if (!byProjectile) { src.moveGuarded = true; src.moveHit = true; src.hitDone = true }
         src.hitPause = if (byProjectile) 0 else (pause.getOrNull(0)?.toInt() ?: 0).coerceIn(0, 60)
         d.hitPause = (pause.getOrNull(1)?.toInt() ?: 0).coerceIn(0, 60)
     }
@@ -550,7 +634,7 @@ class Sim(
     private val noEffect = setOf(
         "null", "screenbound", "width", "hitby", "nothitby", "palfx", "allpalfx", "bgpalfx", "afterimage", "afterimagetime",
         "envcolor", "envshake", "fallenvshake", "displaytoclipboard", "appendtoclipboard", "debug", "trans", "offset",
-        "forcefeedback", "lifeadd", "lifeset", "poweradd", "powerset", "targetlifeadd", "targetpoweradd", "defencemulset",
+        "forcefeedback", "defencemulset",
         "hitfalldamage", "hitfallset", "hitfallvel", "makedust", "gamemakeanim", "sndpan", "stopsnd", "assertspecial",
         "attackdist", "attackmulset", "fallrecover", "hitadd", "reversaldef", "playerpush", "targetdrop", "angledraw",
         "angleadd", "angleset", "anglemul", "text", "mapset", "modifybgctrl", "bgpalfx",
@@ -562,6 +646,10 @@ class Sim(
         val t = text?.trim() ?: return null
         if (t.startsWith("f", ignoreCase = true) && t.drop(1).all { it.isDigit() } && t.length > 1) return null // animação do fightfx
         return (Expr.eval(t, ctx) as? Double)?.toInt()
+    }
+
+    private fun lifeChange(t: SimEntity, v: Int, kill: Boolean, absolute: Boolean) {
+        t.life = (t.life + v).coerceIn(if (kill) 0 else 1, t.lifeMax)
     }
 
     private fun makeExplod(e: SimEntity, c: Controller, ctx: Ctx) {
@@ -725,16 +813,20 @@ class Sim(
                 "vel.y" -> e.vy
                 "facing" -> e.facing.toDouble()
                 "ctrl" -> b(e.ctrl)
-                "alive" -> 1.0
-                "life", "lifemax" -> 1000.0
-                "power" -> 0.0
-                "powermax" -> 3000.0
+                "alive" -> b(e.life > 0)
+                "life" -> e.life.toDouble()
+                "lifemax" -> e.lifeMax.toDouble()
+                "power" -> e.power.toDouble()
+                "powermax" -> e.powerMax.toDouble()
                 "movetype" -> e.moveType
                 "statetype" -> e.stateType
-                "movehit", "movecontact" -> b(e.moveHit)
+                "movehit" -> b(e.moveHit && !e.moveGuarded)
+                "movecontact" -> b(e.moveHit)
                 "hitfall" -> e.gh["fall"] ?: 0.0
                 "hitpausetime" -> e.hitPause.toDouble()
-                "moveguarded", "movereversed", "hitcount", "uniqhitcount", "inguarddist" -> 0.0
+                "moveguarded" -> b(e.moveGuarded)
+                "inguarddist" -> enemyOf(e).let { o -> b(o.hitDef != null && Math.abs(o.x - e.x) < 160) }
+                "movereversed", "hitcount", "uniqhitcount" -> 0.0
                 "numtarget" -> e.targets.count { it.alive }.toDouble()
                 "numhelper" -> {
                     val r = e.root ?: e
@@ -861,9 +953,11 @@ class Sim(
         fun fromCommand(
             book: StateBook, anims: (Int) -> Animation?, cmd: String, ticks: Int = 400,
             pressFrom: Int = 5, pressUntil: Int = 12, enemyDist: Double = 60.0, rootName: String = "P1",
-            consts: Map<String, Double> = emptyMap(),
+            consts: Map<String, Double> = emptyMap(), enemyMode: String = "idle", enemyAttackState: Int? = null,
         ): Sim {
             val sim = Sim(book, anims, runNegative = true, rootName = rootName, collide = true, consts = consts)
+            sim.enemyMode = enemyMode
+            sim.enemyAttackState = enemyAttackState
             sim.spawnRoot(0.0).ctrl = true // no jogo o controle vem do início do round
             sim.spawnEnemy(enemyDist)
             repeat(ticks) { t ->
