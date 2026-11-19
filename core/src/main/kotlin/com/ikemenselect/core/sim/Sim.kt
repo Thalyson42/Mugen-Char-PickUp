@@ -58,7 +58,7 @@ class Sim(
     val book: StateBook,
     val anims: (Int) -> Animation?,
     /** Comando "apertado" (para `command = "nome"`); null = nenhum. */
-    var command: String? = null,
+    var command: String? = null, // nomes separados por '+' quando vários são apertados juntos
     /** Roda os estados -3, -2 e -1 do P1 a cada tick (como o jogo): é por eles que o comando vira golpe e que os helpers nascem. */
     val runNegative: Boolean = false,
     /** Nome do personagem (`name = "..."` nos gatilhos dos helpers). */
@@ -120,8 +120,22 @@ class Sim(
 
     private fun log(s: String) { log += s }
 
+    private val cmdTest = Regex("""command\s*(!?=)\s*"([^"]*)"""", RegexOption.IGNORE_CASE)
+
+    /** `command = "x"` vira 1/0 conforme os comandos apertados agora (vários ao mesmo tempo). */
+    private fun prep(text: String): String {
+        if (!text.contains("command", ignoreCase = true)) return text
+        val on = command?.split('+')?.map { it.trim().lowercase() }?.toSet().orEmpty()
+        return cmdTest.replace(text) { m ->
+            val has = m.groupValues[2].lowercase() in on
+            if ((m.groupValues[1] == "=") == has) "1" else "0"
+        }
+    }
+
+    private fun ev(text: String, ctx: Ctx): Any? = Expr.eval(prep(text), ctx)
+
     /** Depuração: avalia uma expressão no contexto de [e] (null = não deu para saber). */
-    fun debugEval(e: SimEntity, text: String): Any? = Expr.eval(text, Ctx(e))
+    fun debugEval(e: SimEntity, text: String): Any? = Expr.eval(prep(text), Ctx(e))
 
     // ------------------------------------------------------------------ estados
 
@@ -210,9 +224,9 @@ class Sim(
 
     private fun fires(e: SimEntity, c: Controller): Boolean {
         val ctx = Ctx(e)
-        for (t in c.triggerAll) if (Expr.truth(t, ctx) != true) return false
+        for (t in c.triggerAll) if (Expr.truth(prep(t), ctx) != true) return false
         if (c.triggerGroups.isEmpty()) return false
-        if (c.triggerGroups.none { g -> g.all { Expr.truth(it, ctx) == true } }) return false
+        if (c.triggerGroups.none { g -> g.all { Expr.truth(prep(it), ctx) == true } }) return false
         val pers = c.param("persistent")?.trim()?.toIntOrNull() ?: 1
         if (pers == 0) {
             if (e.persist.containsKey(c)) return false
