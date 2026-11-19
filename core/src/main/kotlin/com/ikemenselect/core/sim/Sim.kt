@@ -63,6 +63,8 @@ class Sim(
     val runNegative: Boolean = false,
     /** Nome do personagem (`name = "..."` nos gatilhos dos helpers). */
     val rootName: String = "P1",
+    /** true = o HitDef só acerta quando as caixas Clsn1 do atacante tocam as Clsn2 do alvo; false = acerto forçado. */
+    val collide: Boolean = false,
 ) {
     val entities = ArrayList<SimEntity>()
     private val pending = ArrayList<SimEntity>()
@@ -333,12 +335,29 @@ class Sim(
 
     // ------------------------------------------------------------------ acerto forçado
 
+    private fun frameOf(e: SimEntity) = anims(e.anim)?.let { an -> an.frames.getOrNull(an.frameIndexAt(e.animTick, loop = true)) }
+
+    /** Caixas no mundo: o eixo x espelha com a direção; y cresce para baixo (chão = 0). */
+    private fun worldBoxes(e: SimEntity, boxes: List<com.ikemenselect.core.Box>): List<DoubleArray> = boxes.map { b ->
+        val xa = e.x + e.facing * b.x1
+        val xb = e.x + e.facing * b.x2
+        doubleArrayOf(minOf(xa, xb), e.y + b.y1, maxOf(xa, xb), e.y + b.y2)
+    }
+
+    private fun overlaps(a: SimEntity, d: SimEntity): Boolean {
+        val atk = worldBoxes(a, frameOf(a)?.clsn1.orEmpty())
+        val body = worldBoxes(d, frameOf(d)?.clsn2.orEmpty())
+        return atk.any { p -> body.any { q -> p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3] } }
+    }
+
     private fun enemyOf(a: SimEntity): SimEntity = if (a === enemy || a.root === enemy) root else enemy
 
     private fun resolveHits() {
         for (a in entities.toList()) {
             val hd = a.hitDef ?: continue
             if (!a.alive || a.hitDone) continue
+            val d0 = enemyOf(a)
+            if (collide && !overlaps(a, d0)) continue
             a.hitDone = true
             a.moveHit = true
             val d = enemyOf(a)
@@ -437,6 +456,11 @@ class Sim(
                 "p2dist.x", "p2bodydist.x", "enemydist.x", "enemybodydist.x" -> (enemyOf(e).x - e.x) * e.facing
                 "p2dist.y", "p2bodydist.y", "enemydist.y", "enemybodydist.y" -> enemyOf(e).y - e.y
                 "p2stateno" -> enemyOf(e).state.toDouble()
+                "p2statetype" -> enemyOf(e).stateType
+                "p2movetype" -> enemyOf(e).moveType
+                "playeridexist" -> 0.0
+                "screenheight" -> 240.0
+                "screenwidth" -> 320.0
                 "backedgebodydist", "frontedgebodydist", "backedgedist", "frontedgedist" -> 100.0
                 else -> if (name.startsWith("size.")) 1.0 else unk(name)
             }
@@ -469,7 +493,7 @@ class Sim(
             book: StateBook, anims: (Int) -> Animation?, cmd: String, ticks: Int = 400,
             pressFrom: Int = 5, pressUntil: Int = 12, enemyDist: Double = 60.0, rootName: String = "P1",
         ): Sim {
-            val sim = Sim(book, anims, runNegative = true, rootName = rootName)
+            val sim = Sim(book, anims, runNegative = true, rootName = rootName, collide = true)
             sim.spawnRoot(0.0).ctrl = true // no jogo o controle vem do início do round
             sim.spawnEnemy(enemyDist)
             repeat(ticks) { t ->
