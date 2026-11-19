@@ -10,7 +10,15 @@ import com.ikemenselect.core.StateBook
  * Simulador mínimo do M.U.G.E.N (prova de conceito): executa os estados de verdade, tick a tick, com P1, helpers e um
  * adversário, em vez de adivinhar o resultado lendo o .cns. O acerto do HitDef é forçado (o adversário está sempre ao alcance).
  */
-class HitDefData(val p1stateno: Int?, val p2stateno: Int?, val p1facing: Int, val p2facing: Int)
+class HitDefData(
+    val p1stateno: Int?, val p2stateno: Int?, val p1facing: Int, val p2facing: Int,
+    /** Demais parâmetros numéricos do HitDef, já avaliados (ex.: "ground.velocity" -> [x, y]). */
+    val nums: Map<String, List<Double?>> = emptyMap(),
+    /** Parâmetros de texto (hitflag, guardflag, animtype, ground.type, air.type). */
+    val strs: Map<String, String> = emptyMap(),
+) {
+    fun n(key: String, i: Int = 0): Double? = nums[key]?.getOrNull(i)
+}
 
 class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: SimEntity?, val root: SimEntity?) {
     var state = 0
@@ -47,6 +55,12 @@ class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: 
     var bindLeft = 0
     val persist = HashMap<Controller, Int>()
     var posFrozen = false
+
+    /** Ticks parado por acerto (pausa do golpe / tremor de quem apanha). */
+    var hitPause = 0
+
+    /** Valores que `gethitvar(...)` devolve: preenchidos quando o HitDef acerta. */
+    val gh = HashMap<String, Double>()
     val isHelper: Boolean get() = parent != null
 }
 
@@ -93,6 +107,10 @@ class Sim(
     var tick = 0
     val log = ArrayList<String>()
     val unknown = LinkedHashSet<String>()
+
+    /** Para cada identificador desconhecido, a primeira expressão em que apareceu (ajuda a depurar). */
+    val unknownWhere = LinkedHashMap<String, String>()
+    private var lastExpr = ""
     val ignoredTypes = LinkedHashSet<String>()
     val frames = ArrayList<SimFrame>()
     val sounds = ArrayList<Pair<Int, String>>()
@@ -148,22 +166,53 @@ class Sim(
 
     private fun log(s: String) { log += s }
 
-    private val cmdTest = Regex("""command\s*(!?=)\s*"([^"]*)"""", RegexOption.IGNORE_CASE)
+    private val cmdTest = Regex("""(?:\b(root|parent|target|enemy|enemynear|partner)\s*,\s*)?command\s*(!?=)\s*"([^"]*)"""", RegexOption.IGNORE_CASE)
 
     /** `command = "x"` vira 1/0 conforme os comandos apertados agora (vários ao mesmo tempo). */
-    private fun prep(text: String): String {
-        if (!text.contains("command", ignoreCase = true)) return text
-        val on = command?.split('+')?.map { it.trim().lowercase() }?.toSet().orEmpty()
-        return cmdTest.replace(text) { m ->
-            val has = m.groupValues[2].lowercase() in on
-            if ((m.groupValues[1] == "=") == has) "1" else "0"
+    private val attrTest = Regex(
+        """(?:\b(\w+)\s*,\s*)?\bhitdefattr\s*(!?=)\s*([A-Za-z0-9 ,]+?)(?=\s*(?:\)|&&|\|\||$))""", RegexOption.IGNORE_CASE,
+    )
+
+    /** `hitdefattr = SCA, NA, SA`: vale quando o HitDef ativo de [who] tem esse tipo de estado e esse tipo de ataque. */
+    private fun attrMatches(who: SimEntity, list: String): Boolean {
+        val attr = who.hitDef?.strs?.get("attr") ?: return false
+        val mine = attr.split(',').map { it.trim().uppercase() }
+        val want = list.split(',').map { it.trim().uppercase() }
+        val types = want.firstOrNull().orEmpty()
+        return mine.firstOrNull().orEmpty().all { it in types } && mine.drop(1).any { it in want.drop(1) }
+    }
+
+    private fun prepAttr(text: String, e: SimEntity?): String {
+        if (e == null || !text.contains("hitdefattr", ignoreCase = true)) return text
+        return attrTest.replace(text) { m ->
+            val who = when (m.groupValues[1].lowercase()) {
+                "enemy", "enemynear" -> enemyOf(e)
+                "root" -> e.root ?: e
+                "parent" -> e.parent ?: e
+                else -> e
+            }
+            val has = attrMatches(who, m.groupValues[3])
+            if ((m.groupValues[2] == "=") == has) "1" else "0"
         }
     }
 
-    private fun ev(text: String, ctx: Ctx): Any? = Expr.eval(prep(text), ctx)
+    private fun prep(text0: String, e: SimEntity? = null): String {
+        lastExpr = text0
+        val text = prepAttr(text0, e)
+        if (!text.contains("command", ignoreCase = true)) return text
+        val on = command?.split('+')?.map { it.trim().lowercase() }?.toSet().orEmpty()
+        return cmdTest.replace(text) { m ->
+            // os botões apertados são do P1; o adversário (target/enemy) não aperta nada
+            val other = m.groupValues[1].lowercase() in setOf("target", "enemy", "enemynear", "partner")
+            val has = !other && m.groupValues[3].lowercase() in on
+            if ((m.groupValues[2] == "=") == has) "1" else "0"
+        }
+    }
+
+    private fun ev(text: String, ctx: Ctx): Any? = Expr.eval(prep(text, ctx.e), ctx)
 
     /** Depuração: avalia uma expressão no contexto de [e] (null = não deu para saber). */
-    fun debugEval(e: SimEntity, text: String): Any? = Expr.eval(prep(text), Ctx(e))
+    fun debugEval(e: SimEntity, text: String): Any? = Expr.eval(prep(text, e), Ctx(e))
 
     // ------------------------------------------------------------------ estados
 
@@ -203,6 +252,7 @@ class Sim(
         for (e in entities.toList()) {
             if (!e.alive) continue
             if (paused && !(e === pauser && pauserMoves)) continue
+            if (e.hitPause > 0) { e.hitPause--; continue }
             if (e.fresh) e.fresh = false else { e.time++; e.animTick++ }
             if (e.bindLeft > 0) {
                 e.bindTo?.let { b -> e.x = b.x + b.facing * e.bindDx; e.y = b.y + e.bindDy }
@@ -248,10 +298,10 @@ class Sim(
             if (!f.alive || f.kind != "proj") continue
             val d = enemyOf(f.owner)
             if (collide && !projOverlaps(f, d)) continue
+            if (!flagAllows(hd, d)) continue
             log("t=$tick projétil ${f.id} de ${f.owner.name} acerta ${d.name} (p2=${hd.p2stateno} p2facing=${hd.p2facing})")
-            if (d !in f.owner.targets) f.owner.targets += d
-            if (hd.p2facing != 0) d.facing = if (hd.p2facing > 0) f.facing else -f.facing
-            hd.p2stateno?.takeIf { it >= 0 }?.let { enter(d, it, f.owner) }
+            if (!flagAllows(hd, d)) continue
+            applyHit(f.owner, d, hd, f.facing, byProjectile = true)
             f.alive = false
         }
         fx.removeAll { !it.alive }
@@ -301,9 +351,9 @@ class Sim(
 
     private fun fires(e: SimEntity, c: Controller): Boolean {
         val ctx = Ctx(e)
-        for (t in c.triggerAll) if (Expr.truth(prep(t), ctx) != true) return false
+        for (t in c.triggerAll) if (Expr.truth(prep(t, e), ctx) != true) return false
         if (c.triggerGroups.isEmpty()) return false
-        if (c.triggerGroups.none { g -> g.all { Expr.truth(prep(it), ctx) == true } }) return false
+        if (c.triggerGroups.none { g -> g.all { Expr.truth(prep(it, e), ctx) == true } }) return false
         val pers = c.param("persistent")?.trim()?.toIntOrNull() ?: 1
         if (pers == 0) {
             if (e.persist.containsKey(c)) return false
@@ -318,7 +368,7 @@ class Sim(
 
     // ------------------------------------------------------------------ controladores
 
-    private fun num(c: Controller, key: String, ctx: Ctx): Double? = c.param(key)?.let { Expr.eval(it, ctx) as? Double }
+    private fun num(c: Controller, key: String, ctx: Ctx): Double? = c.param(key)?.let { lastExpr = "${c.type}.$key = $it"; Expr.eval(it, ctx) as? Double }
 
     private fun pair(c: Controller, key: String, ctx: Ctx): Pair<Double?, Double?> {
         val p = splitTop(c.param(key) ?: return null to null)
@@ -366,10 +416,7 @@ class Sim(
             }
             "hitdef" -> {
                 if (e.moveHit || e.hitDone) return
-                e.hitDef = HitDefData(
-                    num(c, "p1stateno", ctx)?.toInt(), num(c, "p2stateno", ctx)?.toInt(),
-                    num(c, "p1facing", ctx)?.toInt() ?: 0, num(c, "p2facing", ctx)?.toInt() ?: 0,
-                )
+                e.hitDef = readHitDef(c, ctx)
             }
             "targetstate" -> {
                 val n = num(c, "value", ctx)?.toInt() ?: return
@@ -422,6 +469,81 @@ class Sim(
             in noEffect -> {}
             else -> ignoredTypes += c.type
         }
+    }
+
+    private val hitStrKeys = setOf(
+        "hitflag", "guardflag", "animtype", "ground.type", "air.type", "attr", "type", "affectteam", "priority",
+        "air.animtype", "fall.animtype", "hitsound", "guardsound", "sparkno", "guard.sparkno",
+    )
+
+    /** Lê todos os parâmetros do HitDef/Projectile (avaliados no atacante). */
+    private fun readHitDef(c: Controller, ctx: Ctx): HitDefData {
+        val nums = HashMap<String, List<Double?>>()
+        val strs = HashMap<String, String>()
+        for ((k, v) in c.entries) {
+            if (k.startsWith("trigger") || k == "persistent" || k == "ignorehitpause") continue
+            val key = k.removePrefix("proj").takeIf { c.type == "projectile" && k.startsWith("proj") } ?: k
+            lastExpr = "${c.type}.$k = $v"
+            if (key in hitStrKeys) strs[key] = v.trim().trim('"') else nums[key] = splitTop(v).map { Expr.eval(it, ctx) as? Double }
+        }
+        return HitDefData(
+            nums["p1stateno"]?.getOrNull(0)?.toInt(), nums["p2stateno"]?.getOrNull(0)?.toInt(),
+            nums["p1facing"]?.getOrNull(0)?.toInt() ?: 0, nums["p2facing"]?.getOrNull(0)?.toInt() ?: 0, nums, strs,
+        )
+    }
+
+    private val animTypes = mapOf("light" to 0.0, "medium" to 1.0, "heavy" to 2.0, "back" to 2.0, "up" to 3.0, "diagup" to 4.0)
+
+    /** O defensor só é atingido se o `hitflag` do golpe cobre o tipo de estado dele (H/M/L no chão, A no ar). */
+    private fun flagAllows(hd: HitDefData, d: SimEntity): Boolean {
+        val f = hd.strs["hitflag"]?.uppercase()?.filter { it.isLetter() } ?: return true
+        if (f.isEmpty()) return true
+        return if (d.stateType == "A") 'A' in f else ('H' in f || 'M' in f || 'L' in f)
+    }
+
+    /**
+     * Efeito de um acerto: valores do `gethitvar`, direção, pausa do golpe e estados de quem bate e de quem apanha.
+     * [src] é quem causou (o atacante, ou o dono do projétil); [srcFacing] o lado dele (ou do projétil).
+     */
+    private fun applyHit(src: SimEntity, d: SimEntity, hd: HitDefData, srcFacing: Int, byProjectile: Boolean) {
+        if (d !in src.targets) src.targets += d
+        val air = d.stateType == "A"
+        val vel = hd.nums[if (air) "air.velocity" else "ground.velocity"].orEmpty()
+        val fallVel = hd.nums["fall.xvel"]?.getOrNull(0) to hd.nums["fall.yvel"]?.getOrNull(0)
+        val pause = hd.nums["pausetime"].orEmpty()
+        val gh = d.gh
+        gh.clear()
+        gh["xvel"] = vel.getOrNull(0) ?: 0.0
+        gh["yvel"] = vel.getOrNull(1) ?: 0.0
+        gh["fall"] = hd.n("fall") ?: 0.0
+        gh["fall.xvel"] = fallVel.first ?: 0.0
+        gh["fall.yvel"] = fallVel.second ?: 0.0
+        gh["damage"] = hd.n("damage") ?: 0.0
+        gh["hitid"] = hd.n("id") ?: 0.0
+        gh["chainid"] = hd.n("chainid") ?: -1.0
+        gh["slidetime"] = hd.n("ground.slidetime") ?: 0.0
+        gh["hittime"] = (if (air) hd.n("air.hittime") ?: 20.0 else hd.n("ground.hittime") ?: 0.0)
+        gh["ctrltime"] = hd.n("guard.ctrltime") ?: 0.0
+        gh["hitshaketime"] = pause.getOrNull(1) ?: 0.0
+        gh["animtype"] = animTypes[hd.strs["animtype"]?.lowercase() ?: "light"] ?: 0.0
+        gh["guarded"] = 0.0
+        gh["fall.recover"] = hd.n("fall.recover") ?: 1.0
+        gh["fall.damage"] = hd.n("fall.damage") ?: 0.0
+        if (hd.p2facing != 0) d.facing = if (hd.p2facing > 0) srcFacing else -srcFacing
+        if (!byProjectile && hd.p1facing < 0) src.facing = -src.facing
+        val p2 = hd.p2stateno?.takeIf { it >= 0 }
+        if (p2 != null) enter(d, p2, src)
+        else {
+            val std = when (d.stateType) { "C" -> 5010; "A" -> 5020; else -> 5000 } // estados de "ser atingido" do common
+            if (book.states[std] != null) { log("t=$tick ${d.name} apanha: estado $std"); enter(d, std, d) }
+        }
+        if (!byProjectile) {
+            hd.p1stateno?.takeIf { it >= 0 }?.let { enter(src, it, src) }
+            src.moveHit = true; src.hitDone = true
+        }
+        // pausa do golpe: o atacante para pausetime[0] ticks; quem apanha, pausetime[1]
+        src.hitPause = if (byProjectile) 0 else (pause.getOrNull(0)?.toInt() ?: 0).coerceIn(0, 60)
+        d.hitPause = (pause.getOrNull(1)?.toInt() ?: 0).coerceIn(0, 60)
     }
 
     /** Controladores que não mudam nada do que o simulador acompanha (visual, vida, poder, som...). */
@@ -485,10 +607,7 @@ class Sim(
         val f = SimFx("proj", id, owner, anim, e.x + e.facing * (ox ?: 0.0), e.y + (oy ?: 0.0), vx ?: 0.0, vy ?: 0.0, e.facing)
         f.left = num(c, "projremovetime", ctx)?.toInt() ?: -1
         f.prio = num(c, "projsprpriority", ctx)?.toInt() ?: 3
-        f.hit = HitDefData(
-            num(c, "p1stateno", ctx)?.toInt(), num(c, "p2stateno", ctx)?.toInt(),
-            num(c, "p1facing", ctx)?.toInt() ?: 0, num(c, "p2facing", ctx)?.toInt() ?: 0,
-        )
+        f.hit = readHitDef(c, ctx)
         fx += f
         log("t=$tick ${e.name} dispara projétil $id (anim $anim)")
     }
@@ -548,17 +667,13 @@ class Sim(
         for (a in entities.toList()) {
             val hd = a.hitDef ?: continue
             if (!a.alive || a.hitDone) continue
-            val d0 = enemyOf(a)
-            if (collide && !overlaps(a, d0)) continue
+            val d = enemyOf(a)
+            if (collide && !overlaps(a, d)) continue
+            if (!flagAllows(hd, d)) continue
             a.hitDone = true
             a.moveHit = true
-            val d = enemyOf(a)
-            if (d !in a.targets) a.targets += d
             log("t=$tick ${a.name} acerta ${d.name} (HitDef p1=${hd.p1stateno} p2=${hd.p2stateno} p2facing=${hd.p2facing})")
-            if (hd.p2facing != 0) d.facing = if (hd.p2facing > 0) a.facing else -a.facing
-            if (hd.p1facing < 0) a.facing = -a.facing
-            hd.p2stateno?.takeIf { it >= 0 }?.let { enter(d, it, a) }
-            hd.p1stateno?.takeIf { it >= 0 }?.let { enter(a, it, a); a.moveHit = true; a.hitDone = true }
+            applyHit(a, d, hd, a.facing, byProjectile = false)
         }
     }
 
@@ -617,7 +732,9 @@ class Sim(
                 "movetype" -> e.moveType
                 "statetype" -> e.stateType
                 "movehit", "movecontact" -> b(e.moveHit)
-                "moveguarded", "movereversed", "hitfall", "hitcount", "uniqhitcount", "hitpausetime", "inguarddist" -> 0.0
+                "hitfall" -> e.gh["fall"] ?: 0.0
+                "hitpausetime" -> e.hitPause.toDouble()
+                "moveguarded", "movereversed", "hitcount", "uniqhitcount", "inguarddist" -> 0.0
                 "numtarget" -> e.targets.count { it.alive }.toDouble()
                 "numhelper" -> {
                     val r = e.root ?: e
@@ -626,13 +743,13 @@ class Sim(
                 "numexplod" -> fx.count { it.alive && it.kind == "explod" && it.owner === (e.root ?: e) && (a0 == null || it.id == a0.toInt()) }.toDouble()
                 "numproj" -> fx.count { it.alive && it.kind == "proj" && it.owner === (e.root ?: e) }.toDouble()
                 "numprojid" -> fx.count { it.alive && it.kind == "proj" && it.owner === (e.root ?: e) && it.id == a0?.toInt() }.toDouble()
-                "ailevel", "isbound", "aicontrol", "win", "lose", "drawgame", "matchover", "hitover" -> if (name == "hitover") 1.0 else 0.0
+                "ailevel", "isbound", "aicontrol", "win", "lose", "drawgame", "matchover", "hitover" -> if (name == "hitover") b(e.hitPause <= 0) else 0.0
                 "numenemy", "numpartner" -> 1.0
                 "roundno", "matchno" -> 1.0
                 "gethitvar" -> a0 ?: 0.0
-                "damage", "hittime", "hitshaketime", "slidetime", "ctrltime", "recovertime", "xoff", "yoff", "xvel", "yvel", "yaccel",
-                "hitid", "chainid", "guarded", "fall", "fall.damage", "fall.xvel", "fall.yvel", "fall.recover", "fall.time",
-                "fall.recovertime", "animtype", "groundtype", "airtype", "fallcount", "isbound" -> 0.0
+                "damage", "hittime", "hitshaketime", "slidetime", "ctrltime", "xvel", "yvel",
+                "hitid", "chainid", "guarded", "fall", "fall.damage", "fall.xvel", "fall.yvel", "fall.recover", "animtype" -> e.gh[name] ?: 0.0
+                "recovertime", "xoff", "yoff", "yaccel", "fall.time", "fall.recovertime", "groundtype", "airtype", "fallcount" -> 0.0
                 "ishelper" -> if (a0 == null) b(e.isHelper) else b(e.helperId == a0.toInt())
                 "command" -> command
                 "name" -> if (e === root) rootName else e.name
@@ -685,6 +802,7 @@ class Sim(
 
         private fun unk(name: String): Any? {
             unknown += name
+            unknownWhere.getOrPut(name) { lastExpr }
             return null
         }
     }

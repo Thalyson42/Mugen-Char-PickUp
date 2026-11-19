@@ -323,4 +323,100 @@ class SimTests {
         sim.run(3)  // o primeiro passo do estado recém-criado não avança a animação
         assertEquals(2.0, sim.debugEval(sim.root, "animelem"))   // elemento 2 começa no tick 4
     }
+
+    @Test
+    fun getHitVarCarriesTheHitDefValuesIntoTheHitState() {
+        val s = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, h]
+            type = HitDef
+            trigger1 = 1
+            p2stateno = 400
+            ground.velocity = -3, -1
+            fall = 1
+            pausetime = 0, 0
+            [Statedef 400]
+            anim = 220
+            [State 400, v]
+            type = VelSet
+            trigger1 = !time
+            x = gethitvar(xvel)
+            y = gethitvar(yvel)
+            [State 400, f]
+            type = VarSet
+            trigger1 = gethitvar(fall)
+            var(1) = 7
+            """,
+            100, ticks = 5,
+        )
+        assertEquals(7, s.enemy.vars[1])
+        assertEquals(-3.0, s.enemy.vx)
+    }
+
+    @Test
+    fun withoutP2StateTheDefenderGoesToTheCommonHitState() {
+        val s = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, h]
+            type = HitDef
+            trigger1 = 1
+            [Statedef 5000]
+            anim = 220
+            """,
+            100, ticks = 5,
+        )
+        assertEquals(5000, s.enemy.state)
+    }
+
+    @Test
+    fun hitFlagThatDoesNotCoverTheDefenderMissesAndHitPauseFreezes() {
+        val miss = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, h]
+            type = HitDef
+            trigger1 = 1
+            hitflag = A
+            p2stateno = 400
+            [Statedef 400]
+            anim = 220
+            """,
+            100, ticks = 5,
+        )
+        assertEquals(0, miss.enemy.state) // o adversário está em pé: golpe só para o ar não pega
+        val pause = forced(
+            """
+            [Statedef 100]
+            anim = 200
+            [State 100, h]
+            type = HitDef
+            trigger1 = 1
+            p2stateno = 400
+            pausetime = 8, 8
+            [Statedef 400]
+            anim = 220
+            """,
+            100, ticks = 5,
+        )
+        assertEquals(400, pause.enemy.state)
+        assertTrue(pause.enemy.time <= 1, "quem apanha ficou parado pelo tremor")
+    }
+
+    @Test
+    fun hitDefAttrTriggerMatchesTheActiveHitDefOfTheRedirectedPlayer() {
+        val sim = Sim(book("[Statedef 0]\nanim = 0\n"), { air[it] })
+        sim.spawnRoot(0.0)
+        sim.spawnEnemy(30.0)
+        assertEquals(0.0, sim.debugEval(sim.root, "enemynear,hitdefattr = SCA, NA, SA"))
+        sim.enemy.hitDef = HitDefData(null, null, 0, 0, strs = mapOf("attr" to "S, NA"))
+        assertEquals(1.0, sim.debugEval(sim.root, "enemynear,hitdefattr = SCA, NA, SA"))
+        assertEquals(0.0, sim.debugEval(sim.root, "enemynear,hitdefattr = SCA, AA, AP"))
+        assertEquals(1.0, sim.debugEval(sim.root, "enemynear,hitdefattr != SCA, AA, AP"))
+        assertTrue(sim.unknown.isEmpty(), "desconhecidos: ${sim.unknown}")
+    }
 }
