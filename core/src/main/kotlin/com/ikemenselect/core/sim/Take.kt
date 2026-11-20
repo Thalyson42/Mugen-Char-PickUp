@@ -17,6 +17,10 @@ class SimTake(
     val log: List<String>,
     /** true se a gravação parou porque ninguém mais estava fazendo nada (false = chegou ao limite de segurança). */
     val settled: Boolean,
+    /** O lado 1 ativou algum HitDef: o estado é um ataque (se não for, "não acertou" não faz sentido). */
+    val tried: Boolean = false,
+    /** A gravação foi cortada porque nada mais mudava (estado esperando algo que a simulação não fornece). */
+    val stuck: Boolean = false,
 ) {
     /** Quadros agrupados por tick (índice = tick). */
     val byTick: List<List<SimFrame>> = run {
@@ -50,6 +54,9 @@ class SimTake(
 object SimRunner {
     /** Limite de segurança: 30 segundos de jogo. */
     const val SAFETY_TICKS = 1800
+
+    /** Quantos ticks seguidos sem nenhuma mudança contam como "travado" (2 segundos). */
+    const val STUCK_TICKS = 120
 
     private val sndRegex = Regex("""^\s*([FfSs])?\s*(-?\d+)\s*,\s*(-?\d+)""")
 
@@ -95,8 +102,22 @@ object SimRunner {
         }
         var calm = 0
         var settled = false
+        var stuck = false
+        var still = 0
+        var lastSig: List<Int>? = null
         while (sim.tick < maxTicks) {
+            val from = sim.frames.size
             sim.step()
+            // estagnação: ninguém muda de estado, animação, posição ou lado, e todas as animações já tocaram inteiras
+            val now = sim.frames.subList(from, sim.frames.size)
+            val sig = now.flatMap { listOf(it.uid, it.state, it.anim, it.x.toInt(), it.y.toInt(), it.facing) }
+            val played = now.all { f ->
+                val total = ((if (f.side == 2 && p2 != null) p2 else p1).anims(f.anim))?.totalTicks ?: 0
+                f.animTick >= total
+            }
+            still = if (sig == lastSig && played) still + 1 else 0
+            lastSig = sig
+            if (still >= STUCK_TICKS && sim.tick > 10) { stuck = true; break }
             val quiet = sim.fx.isEmpty() &&
                 sim.entities.none { it.helperId != null && it.alive } &&
                 (root.state == 0 || root.ctrl) && root.moveType == "I" && (sim.enemy.state == 0 || sim.enemy.ctrl) &&
@@ -105,6 +126,6 @@ object SimRunner {
             if (calm >= 12) { settled = true; break }
         }
         val sounds = sim.sounds.mapNotNull { sd -> parseSound(sd.text)?.let { TakeSound(sd.tick, it, sd.side) } }
-        return SimTake(sim.frames.toList(), sim.tick, sounds, sim.log.toList(), settled)
+        return SimTake(sim.frames.toList(), sim.tick, sounds, sim.log.toList(), settled, sim.attackTried, stuck)
     }
 }

@@ -666,8 +666,10 @@ class SimTests {
     @Test
     fun recordingStopsAtTheSafetyLimitForAMoveThatNeverEnds() {
         val a = SimChar(book("[Statedef 0]\nctrl = 1\n[Statedef 300]\nanim = 200\nctrl = 0\n"), { air[it] })
-        val take = SimRunner.record(a, null, 300, maxTicks = 100)
-        assertEquals(100, take.ticks)
-        assertTrue(!take.settled)
+        val take = SimRunner.record(a, null, 300, maxTicks = 400)
+        // o estado 300 não faz nada: depois de 2 s sem mudar nada a gravação é cortada como "travada"
+        assertTrue(take.stuck && !take.settled, "ticks=${take.ticks}")
+        assertTrue(take.ticks < 400)
+        assertTrue(!take.tried)
     }
 }

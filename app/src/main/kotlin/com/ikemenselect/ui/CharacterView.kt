@@ -488,10 +488,11 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                             val parts = ArrayList<String>()
                             if (!visible) parts += "Nenhuma animação desse estado tem sprite visível, por isso o personagem some."
                             if (other != null) {
-                                parts += if (take.hit) "O adversário passa pelos estados ${take.enemyStates.joinToString(", ")}."
-                                else "O golpe não acertou o adversário nesta simulação (ele fica parado, a uma distância curta)."
+                                if (take.hit) parts += "O adversário passa pelos estados ${take.enemyStates.joinToString(", ")}."
+                                else if (take.tried) parts += "O golpe não acertou o adversário nesta simulação (ele fica parado, a uma distância curta)."
                             }
-                            if (!take.settled) parts += "A simulação chegou ao limite de segurança (${take.ticks / 60} s) sem terminar."
+                            if (take.stuck) parts += "Esse estado ficou parado esperando algo que a simulação não fornece (um comando ou um helper, por exemplo); mostrei os primeiros ${take.ticks / 60} s."
+                            else if (!take.settled) parts += "A simulação chegou ao limite de segurança (${take.ticks / 60} s) sem terminar."
                             note = parts.joinToString(" ").ifEmpty { null }
                         }
                     },

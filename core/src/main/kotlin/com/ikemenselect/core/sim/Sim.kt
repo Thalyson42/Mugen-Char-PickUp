@@ -186,6 +186,8 @@ class Sim(
      * Comportamento do adversário: "idle" (parado), "guard" (defende o que o `guardflag` do golpe cobre) ou "attack"
      * (a cada [enemyAttackEvery] ticks, parado e com controle, entra em [enemyAttackState]).
      */
+    /** O lado 1 (P1 e helpers) chegou a ativar algum HitDef, ou seja, o estado é um ataque. */
+    var attackTried = false
     var enemyMode = "idle"
     var enemyAttackState: Int? = null
     var enemyAttackEvery = 120
@@ -596,6 +598,7 @@ class Sim(
             "hitdef" -> {
                 if (e.moveHit || e.hitDone) return
                 e.hitDef = readHitDef(c, ctx)
+                if (e.side == 1) attackTried = true
             }
             "targetstate" -> {
                 val n = num(c, "value", ctx)?.toInt() ?: return
