@@ -2,6 +2,9 @@ package com.ikemenselect.core.sim
 
 import com.ikemenselect.core.SndRef
 
+/** Um som gravado: toca no tick [tick]; [side] diz de qual personagem é o .snd (1 = P1, 2 = P2). */
+class TakeSound(val tick: Int, val ref: SndRef, val side: Int)
+
 /**
  * Uma simulação gravada: o que cada lutador, helper e efeito fazia a cada tick.
  * O Character View só reproduz isto; quem decide o que acontece é o [Sim].
@@ -10,7 +13,7 @@ class SimTake(
     val frames: List<SimFrame>,
     /** Quantos ticks foram gravados. */
     val ticks: Int,
-    val sounds: List<Pair<Int, SndRef>>,
+    val sounds: List<TakeSound>,
     val log: List<String>,
     /** true se a gravação parou porque ninguém mais estava fazendo nada (false = chegou ao limite de segurança). */
     val settled: Boolean,
@@ -101,7 +104,7 @@ object SimRunner {
             calm = if (quiet && sim.tick > 10) calm + 1 else 0
             if (calm >= 12) { settled = true; break }
         }
-        val sounds = sim.sounds.mapNotNull { (t, text) -> parseSound(text)?.let { t to it } }
+        val sounds = sim.sounds.mapNotNull { sd -> parseSound(sd.text)?.let { TakeSound(sd.tick, it, sd.side) } }
         return SimTake(sim.frames.toList(), sim.tick, sounds, sim.log.toList(), settled)
     }
 }

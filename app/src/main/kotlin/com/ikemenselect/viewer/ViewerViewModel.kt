@@ -22,6 +22,10 @@ import com.ikemenselect.core.Pcm
 import com.ikemenselect.core.SffFile
 import com.ikemenselect.core.SndFile
 import com.ikemenselect.core.SndRef
+import com.ikemenselect.core.sim.Sim
+import com.ikemenselect.core.sim.SimChar
+import com.ikemenselect.core.sim.SimRunner
+import com.ikemenselect.core.sim.SimTake
 import com.ikemenselect.core.SffReader
 import com.ikemenselect.core.SpriteInfo
 import com.ikemenselect.core.StageDef
@@ -61,6 +65,9 @@ class LoadedChar(
 
     /** Lista de golpes já planejada (com as continuações juntas); null enquanto está sendo calculada. */
     @Volatile var catalog: List<CatalogEntry>? = null
+
+    /** Constantes do personagem (`size.xscale`, `movement.yaccel`...) lidas dos mesmos arquivos de estado. */
+    @Volatile var consts: Map<String, Double> = emptyMap()
 
     /** .snd do personagem, aberto na primeira vez que um som é pedido. */
     @Volatile var snd: SndFile? = null
@@ -244,13 +251,14 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadBook(c: LoadedChar) {
         val src = source ?: return
         viewModelScope.launch {
-            val book = withContext(Dispatchers.IO) {
+            val (book, consts) = withContext(Dispatchers.IO) {
                 try {
                     readBook(src.tree, c)
                 } catch (e: Exception) {
-                    StateBook.EMPTY
+                    StateBook.EMPTY to emptyMap<String, Double>()
                 }
             }
+            c.consts = consts
             c.book = book
             _ui.update { it.copy(version = it.version + 1) }
             // analisa os golpes fora da thread principal: são centenas de planos
@@ -266,7 +274,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Ordem do jogo: stcommon, cmd, cns, st, st1..st9 (o último arquivo vence). */
-    private fun readBook(tree: SafTree, c: LoadedChar): StateBook {
+    private fun readBook(tree: SafTree, c: LoadedChar): Pair<StateBook, Map<String, Double>> {
         val names = ArrayList<String>()
         c.files["stcommon"]?.let { names.add(it) }
         c.files["cmd"]?.let { names.add(it) }
@@ -278,7 +286,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
                 ?: tree.resolveNode("data/$name", cached = true)
             if (node != null && !node.isDir) tree.readNode(node.id)?.let { texts.add(it) }
         }
-        return StateBook.parse(texts)
+        return StateBook.parse(texts) to Sim.parseConsts(texts)
     }
 
     /** Planeja o golpe do estado [stateNo] de [c]. [assumeHit]: supõe que acertou (há um adversário). */
@@ -287,6 +295,23 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             val book = c.book ?: return@withContext null
             val helper = c.catalog?.firstOrNull { it.stateNo == stateNo }?.helper == true
             MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit, asHelper = helper, singleState = true, helperId = entry?.helperId, vars = entry?.vars.orEmpty(), rootVars = entry?.rootVars.orEmpty(), targetAnims = target?.anims?.keys))
+        }
+
+    /**
+     * Roda o simulador com o estado [stateNo] de [c] (ou o helper da variante em [entry]) contra [other] e grava o resultado.
+     * Devolve null enquanto os estados do personagem ainda estão sendo lidos.
+     */
+    suspend fun record(c: LoadedChar, other: LoadedChar?, entry: CatalogEntry?, stateNo: Int): SimTake? =
+        withContext(Dispatchers.Default) {
+            val book = c.book ?: return@withContext null
+            val p1 = SimChar(book, { c.anims[it] }, c.consts)
+            val p2 = other?.book?.let { b -> SimChar(b, { other.anims[it] }, other.consts) }
+            val helperId = if (entry?.helper == true) (entry.helperId ?: 0) else null
+            SimRunner.record(
+                p1, p2, stateNo, helperId,
+                vars = entry?.vars.orEmpty(), rootVars = entry?.rootVars.orEmpty(),
+                coordY = c.localCoordY.toDouble(),
+            )
         }
 
     // ---------------------------------------------------------------- sons

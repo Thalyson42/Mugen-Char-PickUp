@@ -658,7 +658,7 @@ class SimTests {
         assertTrue(8000 in take.enemyStates, "estados do P2: ${take.enemyStates}")
         assertEquals(200, take.attackerStates.first())
         assertTrue(take.settled, "ticks=${take.ticks}")
-        assertEquals(SndRef(true, 5, 1), take.sounds.first().second)
+        assertEquals(SndRef(true, 5, 1), take.sounds.first().ref)
         assertTrue(take.byTick.size == take.ticks && take.byTick[0].any { it.side == 1 && it.state == 200 }, "t0=${take.byTick[0].map { it.who + it.state }}")
         assertTrue(take.byTick[0].any { it.side == 2 })
     }

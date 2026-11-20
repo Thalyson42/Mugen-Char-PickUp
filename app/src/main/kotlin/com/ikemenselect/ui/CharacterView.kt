@@ -75,6 +75,8 @@ import com.ikemenselect.core.Placement
 import com.ikemenselect.core.RectF
 import com.ikemenselect.core.SpriteRect
 import com.ikemenselect.core.TargetPlan
+import com.ikemenselect.core.sim.SimFrame
+import com.ikemenselect.core.sim.SimTake
 import com.ikemenselect.viewer.CachedSprite
 import com.ikemenselect.viewer.CharOption
 import com.ikemenselect.viewer.LoadedChar
@@ -119,6 +121,21 @@ private fun priorityOf(play: Play, clock: Float): Int =
     if (play.phases.isNotEmpty()) activePhase(play, clock)?.sprPriority ?: 0 else play.priority
 
 private val IdlePlay = Play(emptyList(), 0f)
+
+/**
+ * Uma simulação gravada sendo reproduzida. O lado 1 da gravação é quem ataca ([atk]); o lado 2, o adversário ([tgt]).
+ * Com [mirror] (o atacante é o P2) a cena é espelhada para o P2 continuar na direita.
+ */
+private class TakePlay(
+    val take: SimTake,
+    val start: Float,
+    val repeat: Boolean,
+    val atk: LoadedChar,
+    val atkOwner: Int,
+    val tgt: LoadedChar?,
+    val tgtOwner: Int,
+    val mirror: Boolean,
+)
 
 /** Sons de um golpe de [ownerId]: tocam quando o relógio passa do tick de cada um (e de novo a cada volta, se repetir). */
 private class SoundPlay(
@@ -262,6 +279,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
     var clock by remember { mutableFloatStateOf(0f) }
     var play1 by remember { mutableStateOf(IdlePlay) }
     var play2 by remember { mutableStateOf(IdlePlay) }
+    var takePlay by remember { mutableStateOf<TakePlay?>(null) }
     var listMode by remember { mutableIntStateOf(0) } // 0 = golpes (estados), 1 = animações
     var note by remember { mutableStateOf<String?>(null) }
     var soundOn by remember { mutableStateOf(true) }
@@ -290,8 +308,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
             note = null
         }
     }
-    LaunchedEffect(ui.p1) { play1 = IdlePlay }
-    LaunchedEffect(ui.p2) { play2 = IdlePlay }
+    LaunchedEffect(ui.p1) { play1 = IdlePlay; takePlay = null }
+    LaunchedEffect(ui.p2) { play2 = IdlePlay; takePlay = null }
 
     val stage = ui.stage
     val stW = stage?.def?.localCoordX ?: 320
@@ -306,7 +324,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                     .clipToBounds()
                     .background(Color(0xFF1E2630)),
             ) {
-                drawScene(viewer, ui, play1, play2, clock, showBoxes, stW, stH)
+                drawScene(viewer, ui, play1, play2, takePlay, clock, showBoxes, stW, stH)
             }
             if (ui.busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
             // aviso sobre o cenário (não ocupa espaço na coluna, para os botões não se mexerem)
@@ -413,8 +431,8 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                     resetKey = Pair(c, listMode),
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     footer = if (listMode == 0) {
-                        "Cada botão é um estado do personagem. A animação e o adversário seguem o que o arquivo define " +
-                            "sem rodar o jogo; golpes com muitas condições podem mostrar só a animação principal."
+                        "Cada botão é um estado do personagem. O app roda uma simulação do motor com os arquivos do personagem " +
+                            "(estados, HitDef, helpers) e mostra o resultado."
                     } else {
                         "Os nomes seguem a convenção comum do Mugen; cada personagem pode usar os números de outro jeito."
                     },
@@ -429,63 +447,51 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                                 val a = c.anims[id] ?: return@launch
                                 viewer.ensureAnims(atkId, c, listOf(a))
                                 val p = Play(listOf(AnimStep(id, -1, false)), now, repeat = loopMove, period = naturalLen(a))
+                                takePlay = null
                                 if (atkId == Owner.P1) play1 = p else play2 = p
                                 return@launch
                             }
-                            val plan = viewer.planMove(c, id, assumeHit = other != null, entry = btn.entry, target = other)
-                            if (plan == null || plan.steps.isEmpty()) {
-                                note = "Esse estado não tem animação para mostrar."
+                            // o simulador roda o estado e grava; a tela só reproduz o que ele fez
+                            val take = viewer.record(c, other, btn.entry, id)
+                            if (take == null) {
+                                note = "Os estados do personagem ainda estão sendo lidos."
                                 return@launch
                             }
-                            val tp = if (other != null) plan.target else null
-                            val atkAnims = LinkedHashSet<Animation>()
-                            val tgtAnims = LinkedHashSet<Animation>()
-                            for (st in plan.steps) c.anims[st.anim]?.let { atkAnims.add(it) }
-                            if (tp != null && other != null) {
-                                for (ph in plan.targets) for (st in ph.steps) {
-                                    if (st.useOwner) c.anims[st.anim]?.let { atkAnims.add(it) }
-                                    else other.anims[st.anim]?.let { tgtAnims.add(it) }
-                                }
-                            }
+                            val atkAnims = take.animsBySide[1].orEmpty().mapNotNull { c.anims[it] }
                             viewer.ensureAnims(atkId, c, atkAnims)
-                            if (other != null && tgtAnims.isNotEmpty()) viewer.ensureAnims(tgtId, other, tgtAnims)
+                            if (other != null) {
+                                val tgtAnims = take.animsBySide[2].orEmpty().mapNotNull { other.anims[it] }
+                                if (tgtAnims.isNotEmpty()) viewer.ensureAnims(tgtId, other, tgtAnims)
+                            }
 
-                            // sons: os do atacante e os das reações do adversário (cada um com o .snd do seu dono)
-                            val tgtSounds = ArrayList<SoundEvent>()
-                            if (other != null) for (ph in plan.targets) for (e in ph.sounds) tgtSounds.add(SoundEvent(e.tick + ph.startTick, e.ref))
+                            // sons: cada lado usa o .snd do seu dono
+                            val s1 = take.sounds.filter { it.side == 1 }.map { SoundEvent(it.tick, it.ref) }
+                            val s2 = if (other != null) take.sounds.filter { it.side == 2 }.map { SoundEvent(it.tick, it.ref) } else emptyList()
                             if (soundOn) {
-                                viewer.prepareSounds(atkId, c, plan.sounds.map { it.ref })
-                                if (other != null && tgtSounds.isNotEmpty()) viewer.prepareSounds(tgtId, other, tgtSounds.map { it.ref })
+                                viewer.prepareSounds(atkId, c, s1.map { it.ref })
+                                if (other != null && s2.isNotEmpty()) viewer.prepareSounds(tgtId, other, s2.map { it.ref })
                             }
 
                             val start = clock
-                            val period = plan.totalTicks.coerceAtLeast(1)
+                            val period = take.ticks.coerceAtLeast(1)
                             soundPlays.clear()
-                            if (plan.sounds.isNotEmpty()) soundPlays.add(SoundPlay(plan.sounds, atkId, start, period, loopMove))
-                            if (tgtSounds.isNotEmpty()) soundPlays.add(SoundPlay(tgtSounds, tgtId, start, period, loopMove))
-                            val atkPlay = Play(plan.steps, start, repeat = loopMove, period = period, priority = plan.sprPriority)
-                            val tgtPlay = if (tp != null && other != null) {
-                                Play(
-                                    tp.steps, start, delay = tp.startTick, repeat = loopMove, period = period,
-                                    ownerChar = c, ownerId = atkId, attacker = atkId,
-                                    binds = plan.effectiveBinds, bindEnd = start + period, phases = plan.targets,
-                                )
-                            } else IdlePlay
-                            if (atkId == Owner.P1) { play1 = atkPlay; play2 = tgtPlay } else { play2 = atkPlay; play1 = tgtPlay }
+                            if (s1.isNotEmpty()) soundPlays.add(SoundPlay(s1, atkId, start, period, loopMove))
+                            if (s2.isNotEmpty()) soundPlays.add(SoundPlay(s2, tgtId, start, period, loopMove))
+                            play1 = IdlePlay
+                            play2 = IdlePlay
+                            takePlay = TakePlay(take, start, loopMove, c, atkId, other, tgtId, mirror = atkId == Owner.P2)
+
                             // o que a pessoa precisa saber quando a tela parece não fazer nada
-                            val visible = plan.steps.any { st ->
-                                c.anims[st.anim]?.frames?.any { f -> viewer.sprite(atkId, f.group, f.image) != null } == true
+                            val visible = take.frames.any { f ->
+                                f.side == 1 && c.anims[f.anim]?.frames?.any { fr -> viewer.sprite(atkId, fr.group, fr.image) != null } == true
                             }
                             val parts = ArrayList<String>()
-                            if (!visible) parts += "Estado de controle: a animação ${plan.steps.first().anim} não tem sprite visível, por isso o personagem some."
-                            if (tp != null) {
-                                parts += if (plan.targets.size > 1) "O adversário passa pelos estados ${plan.targets.joinToString(", ") { it.stateNo.toString() }}."
-                                else "O adversário reage: estado ${tp.stateNo}."
-                                val alt = plan.targets.flatMap { it.alternatives }.distinct()
-                                if (alt.isNotEmpty()) parts += "O arquivo também manda ${alt.joinToString(", ")} (cada ordem vale para um helper diferente)."
-                            } else if (other != null) {
-                                parts += "Este estado, sozinho, não manda o adversário para nenhum estado."
+                            if (!visible) parts += "Nenhuma animação desse estado tem sprite visível, por isso o personagem some."
+                            if (other != null) {
+                                parts += if (take.hit) "O adversário passa pelos estados ${take.enemyStates.joinToString(", ")}."
+                                else "O golpe não acertou o adversário nesta simulação (ele fica parado, a uma distância curta)."
                             }
+                            if (!take.settled) parts += "A simulação chegou ao limite de segurança (${take.ticks / 60} s) sem terminar."
                             note = parts.joinToString(" ").ifEmpty { null }
                         }
                     },
@@ -682,6 +688,7 @@ private fun DrawScope.drawScene(
     ui: ViewerUi,
     play1: Play,
     play2: Play,
+    take: TakePlay?,
     clock: Float,
     showBoxes: Boolean,
     stW: Int,
@@ -693,6 +700,12 @@ private fun DrawScope.drawScene(
 
     if (stage != null) drawStageLayers(viewer, stage, clock, front = false, stW = stW, stH = stH, unit = unit)
     else drawLine(Color(0x55FFFFFF), Offset(0f, ground * unit), Offset(size.width, ground * unit), strokeWidth = 2f)
+
+    if (take != null) {
+        drawTake(viewer, take, clock, showBoxes, stW, stH, unit, ground)
+        if (stage != null) drawStageLayers(viewer, stage, clock, front = true, stW = stW, stH = stH, unit = unit)
+        return
+    }
 
     val home1 = stW / 2f + (stage?.def?.p1StartX ?: -70)
     val home2 = stW / 2f + (stage?.def?.p2StartX ?: 70)
@@ -760,6 +773,48 @@ private fun DrawScope.drawChar(
     if (showBoxes) {
         for (b in f.clsn2) drawBox(Placement.box(px, py, facing, b, sx, sy), Color(0xFF4DA3FF), unit)
         for (b in f.clsn1) drawBox(Placement.box(px, py, facing, b, sx, sy), Color(0xFFFF5A5A), unit)
+    }
+}
+
+/** Desenha o instante da gravação que corresponde ao relógio: cada lutador, helper e efeito do tick, do fundo para a frente. */
+private fun DrawScope.drawTake(
+    viewer: ViewerViewModel,
+    tp: TakePlay,
+    clock: Float,
+    showBoxes: Boolean,
+    stW: Int,
+    stH: Int,
+    unit: Float,
+    ground: Float,
+) {
+    val total = tp.take.ticks
+    if (total <= 0) return
+    val raw = (clock - tp.start).toInt().coerceAtLeast(0)
+    val tick = if (tp.repeat) raw % total else raw.coerceAtMost(total - 1)
+    val frames = tp.take.byTick.getOrNull(tick) ?: return
+    // sprpriority: quem tem o maior valor fica por cima; empate mantém o lado 1 na frente
+    val ordered = frames.sortedWith(compareBy<SimFrame>({ it.prio }, { -it.ownSide }, { it.uid }))
+    val dir = if (tp.mirror) -1 else 1
+    for (f in ordered) {
+        val ownerChar = (if (f.ownSide == 1) tp.atk else tp.tgt) ?: continue
+        val animChar = (if (f.side == 1) tp.atk else tp.tgt) ?: continue
+        val spriteOwner = if (f.side == 1) tp.atkOwner else tp.tgtOwner
+        val anim = animChar.anims[f.anim] ?: continue
+        val fr = anim.frames.getOrNull(anim.frameIndexAt(f.animTick, true)) ?: continue
+        val px = stW / 2f + dir * f.x.toFloat() * stW / ownerChar.localCoordX.coerceAtLeast(1)
+        val py = ground + f.y.toFloat() * stH / ownerChar.localCoordY.coerceAtLeast(1)
+        val facing = f.facing * dir
+        val sx = Placement.charScale(stW, animChar.localCoordX, animChar.size.xscale)
+        val sy = Placement.charScale(stH, animChar.localCoordY, animChar.size.yscale)
+        val cs = viewer.sprite(spriteOwner, fr.group, fr.image)
+        if (cs != null) {
+            val r = Placement.sprite(px, py, facing, fr, cs.info, cs.w, cs.h, sx, sy)
+            drawSprite(cs, r, unit, fr.blend, fr.alphaSrc)
+        }
+        if (showBoxes) {
+            for (b in fr.clsn2) drawBox(Placement.box(px, py, facing, b, sx, sy), Color(0xFF4DA3FF), unit)
+            for (b in fr.clsn1) drawBox(Placement.box(px, py, facing, b, sx, sy), Color(0xFFFF5A5A), unit)
+        }
     }
 }
 

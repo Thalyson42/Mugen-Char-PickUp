@@ -116,6 +116,8 @@ class SimFx(
     var pauseMove = 0
 }
 
+class SimSound(val tick: Int, val text: String, val side: Int)
+
 /** Um espaço de `HitOverride`: golpes com esse `attr` mandam o defensor para [stateno] em vez de apanhar. */
 class HitOv(val attr: String, val stateno: Int, var time: Int, val forceAir: Boolean)
 
@@ -131,6 +133,8 @@ class SimFrame(
     val side: Int = 1,
     /** "char" (lutador), "helper", "explod" ou "proj". */
     val kind: String = "char",
+    /** A quem pertence o lutador, helper ou efeito: 1 = lado do P1, 2 = lado do P2 (não é o mesmo que [side] quando a animação é emprestada). */
+    val ownSide: Int = 1,
 )
 
 class Sim(
@@ -164,7 +168,8 @@ class Sim(
     private var lastExpr = ""
     val ignoredTypes = LinkedHashSet<String>()
     val frames = ArrayList<SimFrame>()
-    val sounds = ArrayList<Pair<Int, String>>()
+    /** Sons pedidos por PlaySnd: tick, texto (`F5,0`) e o lado de quem é o estado que pediu. */
+    val sounds = ArrayList<SimSound>()
     /** Explods e projéteis vivos. */
     val fx = ArrayList<SimFx>()
 
@@ -378,9 +383,9 @@ class Sim(
         entities += pending
         pending.clear()
         for (e in entities) {
-            frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority, e.palRemaps.toMap(), e.uid, e.animTick, e.animOwner.side, if (e.helperId != null) "helper" else "char")
+            frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority, e.palRemaps.toMap(), e.uid, e.animTick, e.animOwner.side, if (e.helperId != null) "helper" else "char", e.side)
         }
-        for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio, emptyMap(), 100000 + f.id, f.animTick, f.owner.side, f.kind)
+        for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio, emptyMap(), 100000 + f.id, f.animTick, f.owner.side, f.kind, f.owner.side)
         tick++
     }
 
@@ -608,7 +613,7 @@ class Sim(
                 val v = num(c, "value", ctx)?.toInt() ?: return
                 for (t in e.targets) if (t.alive) t.facing = if (v > 0) e.facing else if (v < 0) -e.facing else t.facing
             }
-            "playsnd" -> c.param("value")?.let { sounds += tick to it.trim() }
+            "playsnd" -> c.param("value")?.let { sounds += SimSound(tick, it.trim(), e.stateOwner.side) }
             "bindtoparent", "bindtoroot", "bindtotarget" -> {
                 val to = when (c.type) {
                     "bindtoparent" -> e.parent
