@@ -1,5 +1,6 @@
 package com.ikemenselect.core.sim
 
+import com.ikemenselect.core.SndRef
 import com.ikemenselect.core.AirParser
 import com.ikemenselect.core.StateBook
 import kotlin.test.Test
@@ -619,5 +620,54 @@ class SimTests {
         assertEquals(1, sim.fx.count { it.id == 6 }) // animação do fightfx também é contada
         sim.run(5)
         assertEquals(0, sim.fx.count { it.id == 5 })
+    }
+
+    @Test
+    fun recordingUsesEachPlayersOwnStatesAndAnimations() {
+        val a = SimChar(
+            book(
+                """
+                [Statedef 0]
+                ctrl = 1
+                [Statedef 8000]
+                anim = 0
+                [Statedef 200]
+                anim = 200
+                [State 200, h]
+                type = HitDef
+                trigger1 = 1
+                attr = S, NA
+                p2stateno = 8000
+                pausetime = 0, 0
+                [State 200, s]
+                type = PlaySnd
+                trigger1 = !time
+                value = F5, 1
+                [State 200, c]
+                type = ChangeState
+                trigger1 = time >= 6
+                value = 0
+                """,
+            ),
+            { air[it] },
+        )
+        // o P2 é outro personagem: o estado 8000 vem do golpe do P1 (p2getp1state), mas o 5000 seria dele
+        val b = SimChar(book("[Statedef 0]\nctrl = 1\nanim = 0\n[Statedef 5000]\nanim = 0\n"), { air[it] })
+        val take = SimRunner.record(a, b, 200, collide = false)
+        assertTrue(take.hit, "log: ${take.log}")
+        assertTrue(8000 in take.enemyStates, "estados do P2: ${take.enemyStates}")
+        assertEquals(200, take.attackerStates.first())
+        assertTrue(take.settled, "ticks=${take.ticks}")
+        assertEquals(SndRef(true, 5, 1), take.sounds.first().second)
+        assertTrue(take.byTick.size == take.ticks && take.byTick[0].any { it.side == 1 && it.state == 200 }, "t0=${take.byTick[0].map { it.who + it.state }}")
+        assertTrue(take.byTick[0].any { it.side == 2 })
+    }
+
+    @Test
+    fun recordingStopsAtTheSafetyLimitForAMoveThatNeverEnds() {
+        val a = SimChar(book("[Statedef 0]\nctrl = 1\n[Statedef 300]\nanim = 200\nctrl = 0\n"), { air[it] })
+        val take = SimRunner.record(a, null, 300, maxTicks = 100)
+        assertEquals(100, take.ticks)
+        assertTrue(!take.settled)
     }
 }

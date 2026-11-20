@@ -20,6 +20,9 @@ class HitDefData(
     fun n(key: String, i: Int = 0): Double? = nums[key]?.getOrNull(i)
 }
 
+/** Um personagem: os estados, as animações e as constantes dele. P1 e P2 podem ser personagens diferentes. */
+class SimChar(val book: StateBook, val anims: (Int) -> Animation?, val consts: Map<String, Double> = emptyMap())
+
 class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: SimEntity?, val root: SimEntity?) {
     var state = 0
     var prev = 0
@@ -65,6 +68,12 @@ class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: 
 
     /** Último tick em que ficou preso a alguém (preso não é empurrado). */
     var boundTick = -1
+
+    /** De quem é este lutador (estados, animações e constantes); null = o personagem principal do [Sim]. */
+    var chr: SimChar? = null
+
+    /** 1 = lado do P1 (ele e os helpers dele), 2 = lado do P2. */
+    var side = 1
 
     /** RemapPal: "grupo,índice" -> "grupo,índice". */
     val palRemaps = LinkedHashMap<String, String>()
@@ -115,6 +124,13 @@ class SimFrame(
     val x: Double, val y: Double, val facing: Int, val prio: Int,
     /** Troca de paleta ativa (RemapPal): "grupo,índice" de origem -> destino. */
     val remap: Map<String, String> = emptyMap(),
+    val uid: Int = 0,
+    /** Há quantos ticks a animação atual toca (para escolher o quadro). */
+    val animTick: Int = 0,
+    /** De quem são os sprites da animação: 1 = personagem do P1, 2 = personagem do P2. */
+    val side: Int = 1,
+    /** "char" (lutador), "helper", "explod" ou "proj". */
+    val kind: String = "char",
 )
 
 class Sim(
@@ -136,7 +152,7 @@ class Sim(
     seed: Long = 12345L,
 ) {
     val entities = ArrayList<SimEntity>()
-    private val pending = ArrayList<SimEntity>()
+    val pending = ArrayList<SimEntity>()
     lateinit var root: SimEntity
     lateinit var enemy: SimEntity
     var tick = 0
@@ -154,6 +170,13 @@ class Sim(
 
     /** Aceleração vertical da gravidade (padrão do M.U.G.E.N quando o personagem não diz outra). */
     var yaccel = consts["movement.yaccel"] ?: 0.44
+
+    /** Personagem principal (P1 e seus helpers) e o do adversário (por padrão o mesmo). */
+    val ownChar = SimChar(book, anims, consts)
+    var enemyChar: SimChar? = null
+    private fun chrOf(e: SimEntity): SimChar = e.chr ?: ownChar
+    private fun animsOf(e: SimEntity): (Int) -> Animation? = chrOf(e.animOwner).anims
+    private fun yaccelOf(e: SimEntity) = chrOf(e).consts["movement.yaccel"] ?: yaccel
     /**
      * Comportamento do adversário: "idle" (parado), "guard" (defende o que o `guardflag` do golpe cobre) ou "attack"
      * (a cada [enemyAttackEvery] ticks, parado e com controle, entra em [enemyAttackState]).
@@ -198,6 +221,8 @@ class Sim(
 
     fun spawnEnemy(x: Double): SimEntity {
         val e = SimEntity(uids++, "P2", null, null, null)
+        e.chr = enemyChar ?: ownChar
+        e.side = 2
         e.x = x
         e.facing = -1
         entities += e
@@ -210,6 +235,8 @@ class Sim(
     fun spawnHelper(creator: SimEntity, id: Int, name: String, state: Int, dx: Double, dy: Double, facingParam: Int): SimEntity {
         val r = creator.root ?: creator
         val h = SimEntity(uids++, name, id, creator, r)
+        h.chr = creator.chr
+        h.side = creator.side
         h.x = creator.x + creator.facing * dx
         h.y = creator.y + dy
         h.facing = if (facingParam < 0) -creator.facing else creator.facing
@@ -275,7 +302,7 @@ class Sim(
 
     // ------------------------------------------------------------------ estados
 
-    private fun enter(e: SimEntity, no: Int, owner: SimEntity) {
+    fun enter(e: SimEntity, no: Int, owner: SimEntity) {
         e.prev = e.state
         e.state = no
         e.time = 0
@@ -287,10 +314,12 @@ class Sim(
         e.hitDone = false
         e.moveHit = false
         e.moveGuarded = false
-        val def = book.states[no] ?: return
+        val def = chrOf(owner).book.states[no] ?: return
         val ctx = Ctx(e)
         def.props["type"]?.trim()?.firstOrNull()?.uppercaseChar()?.let { if (it != 'U') e.stateType = it.toString() }
         def.props["movetype"]?.trim()?.firstOrNull()?.uppercaseChar()?.let { if (it != 'U') e.moveType = it.toString() }
+        // o estado parado (0) não declara movetype no common, mas quem chega nele está em repouso
+        if (no == 0 && def.props["movetype"] == null) e.moveType = "I"
         def.props["physics"]?.trim()?.firstOrNull()?.uppercaseChar()?.let { e.physics = if (it == 'U') e.physics else it.toString() }
         def.props["poweradd"]?.let { s -> (Expr.eval(s, ctx) as? Double)?.let { e.power = (e.power + it.toInt()).coerceIn(0, e.powerMax) } }
         def.props["ctrl"]?.let { s -> (Expr.eval(s, ctx) as? Double)?.let { e.ctrl = it != 0.0 } }
@@ -335,9 +364,9 @@ class Sim(
             runState(e)
             if (!e.posFrozen) {
                 when (e.physics) {
-                    "S" -> e.vx *= consts["movement.stand.friction"] ?: 0.85
-                    "C" -> e.vx *= consts["movement.crouch.friction"] ?: 0.82
-                    "A" -> e.vy += yaccel
+                    "S" -> e.vx *= chrOf(e).consts["movement.stand.friction"] ?: 0.85
+                    "C" -> e.vx *= chrOf(e).consts["movement.crouch.friction"] ?: 0.82
+                    "A" -> e.vy += yaccelOf(e)
                 }
                 e.x += e.vx * e.facing; e.y += e.vy
             }
@@ -349,9 +378,9 @@ class Sim(
         entities += pending
         pending.clear()
         for (e in entities) {
-            frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority, e.palRemaps.toMap())
+            frames += SimFrame(tick, e.name, e.state, e.anim, e.animOwner.name, e.x, e.y, e.facing, e.sprPriority, e.palRemaps.toMap(), e.uid, e.animTick, e.animOwner.side, if (e.helperId != null) "helper" else "char")
         }
-        for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio)
+        for (f in fx) frames += SimFrame(tick, "${f.kind}#${f.id}", 0, f.anim, f.owner.name, f.x, f.y, f.facing, f.prio, emptyMap(), 100000 + f.id, f.animTick, f.owner.side, f.kind)
         tick++
     }
 
@@ -362,7 +391,7 @@ class Sim(
             roundState >= 3 -> {
                 if (roundState == 3 && tick - koTick >= 60) {
                     roundState = 4
-                    for (p in listOf(root, enemy)) if (p.life > 0 && book.states[180] != null) { log("t=$tick ${p.name} vence: estado 180"); enter(p, 180, p) }
+                    for (p in listOf(root, enemy)) if (p.life > 0 && chrOf(p).book.states[180] != null) { log("t=$tick ${p.name} vence: estado 180"); enter(p, 180, p) }
                 }
             }
             tick < introTicks / 2 -> roundState = 0
@@ -374,8 +403,8 @@ class Sim(
         }
     }
 
-    private fun frontWidth(e: SimEntity) = consts["size.ground.front"] ?: 16.0
-    private fun backWidth(e: SimEntity) = consts["size.ground.back"] ?: 15.0
+    private fun frontWidth(e: SimEntity) = chrOf(e).consts["size.ground.front"] ?: 16.0
+    private fun backWidth(e: SimEntity) = chrOf(e).consts["size.ground.back"] ?: 15.0
 
     /** Paredes, chão e empurrão entre os dois lutadores; quem está sendo atingido contra a parede empurra o atacante para trás. */
     private fun constrain() {
@@ -426,7 +455,7 @@ class Sim(
             when {
                 f.left > 0 -> if (--f.left == 0) f.alive = false
                 f.left == -2 -> {
-                    val an = anims(f.anim)
+                    val an = chrOf(f.owner).anims(f.anim)
                     if (an == null) { if (f.animTick >= 30) f.alive = false } // animação de fightfx: dura pouco
                     else if (!an.infinite && f.animTick >= an.totalTicks) f.alive = false
                 }
@@ -450,7 +479,7 @@ class Sim(
     }
 
     private fun projOverlaps(f: SimFx, d: SimEntity): Boolean {
-        val an = anims(f.anim) ?: return false
+        val an = chrOf(f.owner).anims(f.anim) ?: return false
         val fr = an.frames.getOrNull(an.frameIndexAt(f.animTick, loop = true)) ?: return false
         val atk = fr.clsn1.map { b ->
             val xa = f.x + f.facing * b.x1; val xb = f.x + f.facing * b.x2
@@ -467,7 +496,7 @@ class Sim(
 
     private fun runNegative(e: SimEntity) {
         for (no in intArrayOf(-3, -2, -1)) {
-            val def = book.states[no] ?: continue
+            val def = chrOf(e).book.states[no] ?: continue
             val before = e.state
             for (c in def.controllers.toList()) {
                 if (!e.alive) return
@@ -483,7 +512,7 @@ class Sim(
         var changed: Boolean
         do {
             changed = false
-            val def = book.states[e.state] ?: return
+            val def = chrOf(e.stateOwner).book.states[e.state] ?: return
             val stateBefore = e.state
             for (c in def.controllers.toList()) {
                 if (!e.alive) return
@@ -602,7 +631,7 @@ class Sim(
             "screenbound" -> if ((num(c, "value", ctx) ?: 1.0) == 0.0) e.boundOff = true
             "playerpush" -> if ((num(c, "value", ctx) ?: 1.0) == 0.0) e.pushOff = true
             "posfreeze" -> if ((num(c, "value", ctx) ?: 1.0) != 0.0) e.posFrozen = true
-            "gravity" -> e.vy += yaccel
+            "gravity" -> e.vy += yaccelOf(e)
             "sprpriority" -> num(c, "value", ctx)?.let { e.sprPriority = it.toInt() }
             "movehitreset" -> { e.moveHit = false; e.hitDone = false }
             "targetvelset" -> for (t in e.targets) if (t.alive) { num(c, "x", ctx)?.let { t.vx = it }; num(c, "y", ctx)?.let { t.vy = it } }
@@ -715,7 +744,7 @@ class Sim(
         if (p2 != null) enter(d, p2, src)
         else {
             val std = when (d.stateType) { "C" -> 5010; "A" -> 5020; else -> 5000 } // estados de "ser atingido" do common
-            if (book.states[std] != null) { log("t=$tick ${d.name} apanha: estado $std"); enter(d, std, d) }
+            if (chrOf(d).book.states[std] != null) { log("t=$tick ${d.name} apanha: estado $std"); enter(d, std, d) }
         }
         if (!byProjectile) {
             hd.p1stateno?.takeIf { it >= 0 }?.let { enter(src, it, src) }
@@ -739,7 +768,7 @@ class Sim(
         val dmg = hd.n("damage", i) ?: 0.0
         val kill = (hd.n(if (guarded) "guard.kill" else "kill") ?: 1.0) != 0.0
         d.life = (d.life - dmg.toInt()).coerceAtLeast(if (kill) 0 else 1)
-        if (d.life <= 0 && (d === root || d === enemy) && book.states[5150] != null) { log("t=$tick ${d.name} nocauteado: estado 5150"); enter(d, 5150, d) }
+        if (d.life <= 0 && (d === root || d === enemy) && chrOf(d).book.states[5150] != null) { log("t=$tick ${d.name} nocauteado: estado 5150"); enter(d, 5150, d) }
         val k = if (guarded) 0.5 else 1.0
         val hitDmg = hd.n("damage") ?: 0.0
         val get = hd.n("getpower", i) ?: (hitDmg * 0.7 * k)
@@ -762,7 +791,7 @@ class Sim(
         d.facing = -srcFacing
         val std = when (d.stateType) { "C" -> 151; "A" -> 152; else -> 150 }
         log("t=$tick ${d.name} defende: estado $std")
-        if (book.states[std] != null) enter(d, std, d)
+        if (chrOf(d).book.states[std] != null) enter(d, std, d)
         applyDamage(src, d, hd, guarded = true)
         if (!byProjectile) { src.moveGuarded = true; src.moveHit = true; src.hitDone = true }
         src.hitPause = if (byProjectile) 0 else (pause.getOrNull(0)?.toInt() ?: 0).coerceIn(0, 60)
@@ -902,7 +931,7 @@ class Sim(
 
     // ------------------------------------------------------------------ acerto forçado
 
-    private fun frameOf(e: SimEntity) = anims(e.anim)?.let { an -> an.frames.getOrNull(an.frameIndexAt(e.animTick, loop = true)) }
+    private fun frameOf(e: SimEntity) = animsOf(e)(e.anim)?.let { an -> an.frames.getOrNull(an.frameIndexAt(e.animTick, loop = true)) }
 
     /** Caixas no mundo: o eixo x espelha com a direção; y cresce para baixo (chão = 0). */
     private fun worldBoxes(e: SimEntity, boxes: List<com.ikemenselect.core.Box>): List<DoubleArray> = boxes.map { b ->
@@ -953,7 +982,7 @@ class Sim(
 
         override fun ident(name: String, args: List<Any?>?): Any? {
             val a0 = (args?.getOrNull(0) as? Double)
-            val cur = anims(e.anim)
+            val cur = animsOf(e)(e.anim)
             val elapsed = e.animTick
             return when (name) {
                 "a", "s", "c", "l", "i", "h", "u", "n", "f", "p", "d" -> if (args == null) name.uppercase() else unk(name)
@@ -971,7 +1000,7 @@ class Sim(
                     if (cur == null || n == null || n < 1 || n > cur.frames.size) null else (elapsed - cur.frameStart(n - 1)).toDouble()
                 }
                 "animelemno" -> cur?.let { (it.frameIndexAt(elapsed, loop = true) + 1).toDouble() }
-                "animexist", "selfanimexist" -> a0?.let { b(anims(it.toInt()) != null) }
+                "animexist", "selfanimexist" -> a0?.let { b(chrOf(e).anims(it.toInt()) != null) }
                 "var" -> a0?.toInt()?.let { if (it in 0..59) e.vars[it].toDouble() else 0.0 }
                 "fvar" -> a0?.toInt()?.let { if (it in 0..39) e.fvars[it] else 0.0 }
                 "sysvar", "sysfvar" -> 0.0
@@ -1068,7 +1097,7 @@ class Sim(
                 "frontedgebodydist" -> (if (e.facing > 0) rightWall - e.x else e.x - leftWall) - frontWidth(e)
                 "screenpos.x" -> e.x + 160.0
                 "screenpos.y" -> e.y
-                else -> consts[name] ?: defaultConsts[name] ?: if (name.startsWith("size.")) 1.0 else unk(name)
+                else -> chrOf(e).consts[name] ?: defaultConsts[name] ?: if (name.startsWith("size.")) 1.0 else unk(name)
             }
         }
 
