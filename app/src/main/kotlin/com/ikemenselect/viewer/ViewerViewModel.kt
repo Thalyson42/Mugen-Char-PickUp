@@ -12,11 +12,8 @@ import com.ikemenselect.core.AirParser
 import com.ikemenselect.core.CharDef
 import com.ikemenselect.core.CharFiles
 import com.ikemenselect.core.CharSize
-import com.ikemenselect.core.MovePlan
 import com.ikemenselect.core.CatalogEntry
 import com.ikemenselect.core.MoveCatalog
-import com.ikemenselect.core.MovePlanner
-import com.ikemenselect.core.PlanOptions
 import com.ikemenselect.core.StateBook
 import com.ikemenselect.core.Pcm
 import com.ikemenselect.core.SffFile
@@ -290,14 +287,6 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         }
         return StateBook.parse(texts) to Sim.parseConsts(texts)
     }
-
-    /** Planeja o golpe do estado [stateNo] de [c]. [assumeHit]: supõe que acertou (há um adversário). */
-    suspend fun planMove(c: LoadedChar, stateNo: Int, assumeHit: Boolean, entry: CatalogEntry? = null, target: LoadedChar? = null): MovePlan? =
-        withContext(Dispatchers.Default) {
-            val book = c.book ?: return@withContext null
-            val helper = c.catalog?.firstOrNull { it.stateNo == stateNo }?.helper == true
-            MovePlanner.plan(book, stateNo, { c.anims[it] }, PlanOptions(assumeHit = assumeHit, asHelper = helper, singleState = true, helperId = entry?.helperId, vars = entry?.vars.orEmpty(), rootVars = entry?.rootVars.orEmpty(), targetAnims = target?.anims?.keys))
-        }
 
     /**
      * Roda o simulador com o estado [stateNo] de [c] (ou o helper da variante em [entry]) contra [other] e grava o resultado.

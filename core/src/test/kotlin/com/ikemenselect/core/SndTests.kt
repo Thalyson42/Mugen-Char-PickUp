@@ -67,33 +67,4 @@ class SndTests {
         assertEquals(4, f.pcm(1, 0)!!.data.size)
         assertNull(SndFile.open(src(ByteArray(40))))
     }
-
-    @Test
-    fun playSndAndHitSoundBecomeEvents() {
-        val book = StateBook.parse(listOf(
-            """
-            [Statedef 200]
-            type = S
-            anim = 200
-            [State 200, a]
-            type = PlaySnd
-            trigger1 = time = 3
-            value = S300, 23+random%4
-            [State 200, b]
-            type = PlaySnd
-            trigger1 = 1
-            value = F7, 1
-            [State 200, hit]
-            type = HitDef
-            trigger1 = time = 0
-            hitsound = 5, 2
-            """,
-        ))
-        val anims = mapOf(200 to Animation(200, (0..1).map { Frame(0, it, 0, 0, 5, false, false, Blend.NONE, 256, 0, emptyList(), emptyList()) }, 0))
-        val p = MovePlanner.plan(book, 200, { anims[it] })!!
-        assertEquals(listOf(0 to SndRef(true, 7, 1), 1 to SndRef(true, 5, 2), 3 to SndRef(false, 300, 23)), p.sounds.sortedBy { it.tick }.map { it.tick to it.ref })
-        val none = MovePlanner.plan(book, 200, { anims[it] }, PlanOptions(assumeHit = false))!!
-        assertTrue(none.sounds.none { it.ref == SndRef(true, 5, 2) })
-        assertNotNull(p)
-    }
 }

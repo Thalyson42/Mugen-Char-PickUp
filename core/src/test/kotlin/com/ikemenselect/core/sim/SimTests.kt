@@ -709,4 +709,30 @@ class SimTests {
         val a = SimChar(book("[Statedef 0]\nctrl = 1\n[Statedef 300]\nanim = 200\n"), { air[it] })
         assertTrue(Scenario.record(a, null, 300) == null)
     }
+
+    @Test
+    fun catalogListsStatesWithoutThePlanner() {
+        val b = book(
+            """
+            [Statedef -1]
+            [State -1, a]
+            type = ChangeState
+            value = 200
+            trigger1 = command = "x"
+            [Statedef 200]
+            anim = 200
+            [Statedef 9000]
+            anim = 9999
+            [State 9000, h]
+            type = Helper
+            trigger1 = 1
+            id = 5
+            stateno = 9000
+            """.trimIndent(),
+        )
+        val cat = com.ikemenselect.core.MoveCatalog.build(b) { air[it] }
+        val e = cat.first { it.stateNo == 200 }
+        assertTrue(e.commands == listOf("x") && !e.invisible)
+        assertTrue(cat.first { it.stateNo == 9000 }.invisible)
+    }
 }

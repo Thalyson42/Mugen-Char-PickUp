@@ -246,8 +246,7 @@ private fun buildMoves(catalog: List<CatalogEntry>): List<BtnItem> =
         val label = listOfNotNull(cmds.ifEmpty { null }, "${e.stateNo}", AnimNames.exact(e.stateNo), e.variant).joinToString(" · ")
         // cada estado é um botão (como antes); e.internal marca as etapas de outro golpe, para uma lista futura
         // estados de controle (anim 9999 e nenhum alvo com imagem) não mostram nada: ficam num grupo recolhido
-        val invisible = e.plan.steps.all { it.anim == 9999 } &&
-            e.plan.targets.all { t -> t.steps.all { it.anim == 9999 && !it.useOwner } }
+        val invisible = e.invisible
         val group = when {
             invisible -> "Internos"
             e.helper -> "Helpers"
