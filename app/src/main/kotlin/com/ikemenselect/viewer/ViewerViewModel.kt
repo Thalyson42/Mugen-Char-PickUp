@@ -292,7 +292,16 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
      * Roda o simulador com o estado [stateNo] de [c] (ou o helper da variante em [entry]) contra [other] e grava o resultado.
      * Devolve null enquanto os estados do personagem ainda estão sendo lidos.
      */
-    suspend fun record(c: LoadedChar, other: LoadedChar?, entry: CatalogEntry?, stateNo: Int): SimTake? =
+    private val takeCache = ConcurrentHashMap<String, SimTake>()
+
+    suspend fun record(c: LoadedChar, other: LoadedChar?, entry: CatalogEntry?, stateNo: Int): SimTake? {
+        // o mesmo botão contra o mesmo adversário dá sempre a mesma gravação: guarda para não recalcular
+        val key = "${System.identityHashCode(c)}/${System.identityHashCode(other)}/$stateNo/${entry?.helperId}/${entry?.variant}"
+        takeCache[key]?.let { return it }
+        return recordNow(c, other, entry, stateNo)?.also { takeCache[key] = it }
+    }
+
+    private suspend fun recordNow(c: LoadedChar, other: LoadedChar?, entry: CatalogEntry?, stateNo: Int): SimTake? =
         withContext(Dispatchers.Default) {
             val book = c.book ?: return@withContext null
             val p1 = SimChar(book, { c.anims[it] }, c.consts, c.name)

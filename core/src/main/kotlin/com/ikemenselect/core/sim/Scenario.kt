@@ -54,38 +54,38 @@ object Scenario {
         return out
     }
 
-    private fun dist(edges: Map<Int, Set<Int>>, starts: Collection<Int>, target: Int): Int? {
+    private fun dist(edges: Map<Int, Set<Int>>, starts: Collection<Int>, target: Int, hubs: Boolean = false): Int? {
         val d = HashMap<Int, Int>()
         val q = ArrayDeque<Int>()
         for (s in starts) { d[s] = 0; q += s }
         while (q.isNotEmpty()) {
             val n = q.removeFirst()
             if (n == target) return d[n]
-            for (m in edges[n].orEmpty()) if (m !in d) { d[m] = d[n]!! + 1; q += m }
+            for (m in edges[n].orEmpty()) if (m !in d && (hubs || m == target || m in 100..4999)) { d[m] = d[n]!! + 1; q += m }
         }
         return null
     }
 
     /** Estados que chegam ao [target] (inclusive). */
-    private fun ancestors(edges: Map<Int, Set<Int>>, target: Int): Set<Int> {
+    private fun ancestors(edges: Map<Int, Set<Int>>, target: Int, hubs: Boolean = false): Set<Int> {
         val rev = HashMap<Int, MutableSet<Int>>()
         for ((a, bs) in edges) for (b in bs) rev.getOrPut(b) { HashSet() } += a
         val seen = HashSet<Int>()
         val q = ArrayDeque<Int>()
         seen += target; q += target
-        while (q.isNotEmpty()) for (a in rev[q.removeFirst()].orEmpty()) if (seen.add(a)) q += a
+        while (q.isNotEmpty()) for (a in rev[q.removeFirst()].orEmpty()) if ((hubs || a >= 100 && a < 5000 || a < 0) && seen.add(a)) q += a
         return seen
     }
 
     /** Botões que, via estado -1, levam o P1 a algum estado de onde se chega ao [target]; mais curtos primeiro. */
-    fun routes(book: StateBook, target: Int): List<Route> {
+    fun routes(book: StateBook, target: Int, hubs: Boolean = false): List<Route> {
         val edges = edges(book)
         val neg = book.states[-1] ?: return emptyList()
         val out = LinkedHashMap<String, Route>()
         for (c in neg.controllers) {
             if (c.type != "changestate" && c.type != "selfstate") continue
             val r = literal(c.param("value")) ?: continue
-            val d = dist(edges, listOf(r), target) ?: continue
+            val d = dist(edges, listOf(r), target, hubs) ?: continue
             val groups = if (c.triggerGroups.isEmpty()) listOf(emptyList()) else c.triggerGroups
             for (g in groups) {
                 val names = (c.triggerAll + g).flatMap { l -> cmdRe.findAll(l).map { it.groupValues[1] }.toList() }.distinct()
@@ -265,24 +265,35 @@ object Scenario {
      */
     fun record(
         p1: SimChar, p2: SimChar?, target: Int, helperId: Int? = null, initial: List<Assumption> = emptyList(),
-        coordY: Double = 240.0, seed: Long = 12345L, budgetMs: Long = 25_000, maxTicks: Int = 3000, lead: Int = 20,
+        coordY: Double = 240.0, seed: Long = 12345L, budgetMs: Long = 25_000, maxTicks: Int = 1500, lead: Int = 20,
+    ): SimTake? {
+        // primeiro só por caminhos "de golpe" (estados 100-4999); se não houver, deixa passar por estados básicos (0, 20...)
+        val t0 = System.currentTimeMillis()
+        search(p1, p2, target, helperId, initial, coordY, seed, budgetMs, maxTicks, lead, false)?.let { return it }
+        val left = minOf(budgetMs - (System.currentTimeMillis() - t0), 6_000L)
+        return if (left > 500) search(p1, p2, target, helperId, initial, coordY, seed, left, maxTicks, lead, true) else null
+    }
+
+    private fun search(
+        p1: SimChar, p2: SimChar?, target: Int, helperId: Int?, initial: List<Assumption>,
+        coordY: Double, seed: Long, budgetMs: Long, maxTicks: Int, lead: Int, hubs: Boolean,
     ): SimTake? {
         val book = p1.book
         val edges = edges(book)
-        val anc = ancestors(edges, target)
+        val anc = ancestors(edges, target, hubs)
         val def = HashMap<Int, Int>()
-        for (s in anc) dist(edges, listOf(s), target)?.let { def[s] = it }
+        for (s in anc) dist(edges, listOf(s), target, hubs)?.let { def[s] = it }
         val desc = HashSet<Int>().also { out ->
             // o que o golpe chama logo em seguida (até 3 passos); mais longe já é outra coisa (a Yoka volta a ciclar, etc.)
             var layer = listOf(target); out += target
             repeat(3) { layer = layer.flatMap { edges[it].orEmpty() }.filter { out.add(it) } }
         }
         val deadline = System.currentTimeMillis() + budgetMs
-        val candidates: List<Route?> = routes(book, target).take(6) +
-            (if (dist(edges, listOf(0, -2, -3), target) != null) listOf<Route?>(null) else emptyList())
+        val candidates: List<Route?> = routes(book, target, hubs).take(if (hubs) 3 else 6) +
+            (if (dist(edges, listOf(0, -2, -3), target, hubs) != null) listOf<Route?>(null) else emptyList())
         for (route in candidates) {
             val assumed = ArrayList(initial)
-            repeat(8) {
+            for (iter in 0 until 8) {
                 if (System.currentTimeMillis() >= deadline) return null
                 var r = run(p1, p2, target, helperId, route, assumed, def, desc, coordY, seed, 70.0, maxTicks, deadline)
                 if (r.reached >= 0) {
@@ -295,9 +306,9 @@ object Scenario {
                     }
                     return build(r, route, assumed, lead, p1, p2)
                 }
-                val d = r.diag ?: return@repeat
+                val d = r.diag ?: break
                 val fresh = d.fails.filter { f -> assumed.none { it.key == f.key && it.value == f.value } }
-                if (fresh.isEmpty()) return@repeat
+                if (fresh.isEmpty()) break
                 // um ajuste novo para a mesma variável substitui o antigo
                 assumed.removeAll { a -> fresh.any { it.key == a.key } }
                 assumed += fresh
