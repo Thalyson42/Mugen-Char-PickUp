@@ -24,6 +24,8 @@ import com.ikemenselect.core.SndFile
 import com.ikemenselect.core.SndRef
 import com.ikemenselect.core.sim.Sim
 import com.ikemenselect.core.sim.SimChar
+import com.ikemenselect.core.sim.Assumption
+import com.ikemenselect.core.sim.Scenario
 import com.ikemenselect.core.sim.SimRunner
 import com.ikemenselect.core.sim.SimTake
 import com.ikemenselect.core.SffReader
@@ -304,9 +306,13 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun record(c: LoadedChar, other: LoadedChar?, entry: CatalogEntry?, stateNo: Int): SimTake? =
         withContext(Dispatchers.Default) {
             val book = c.book ?: return@withContext null
-            val p1 = SimChar(book, { c.anims[it] }, c.consts)
+            val p1 = SimChar(book, { c.anims[it] }, c.consts, c.name)
             val p2 = other?.book?.let { b -> SimChar(b, { other.anims[it] }, other.consts) }
             val helperId = if (entry?.helper == true) (entry.helperId ?: 0) else null
+            // primeiro tenta chegar ao estado do jeito do jogo: apertando o comando e assumindo os interruptores que faltarem
+            val initial = entry?.rootVars.orEmpty().map { (k, v) -> Assumption("root", 'v', k, v.toDouble()) } +
+                entry?.vars.orEmpty().map { (k, v) -> Assumption(if (helperId == null) "root" else "h$helperId", 'v', k, v.toDouble()) }
+            Scenario.record(p1, p2, stateNo, helperId, initial, coordY = c.localCoordY.toDouble(), budgetMs = 12_000)?.let { return@withContext it }
             SimRunner.record(
                 p1, p2, stateNo, helperId,
                 vars = entry?.vars.orEmpty(), rootVars = entry?.rootVars.orEmpty(),

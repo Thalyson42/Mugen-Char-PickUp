@@ -672,4 +672,41 @@ class SimTests {
         assertTrue(take.ticks < 400)
         assertTrue(!take.tried)
     }
+
+    @Test
+    fun scenarioPressesTheCommandAndAssumesTheMissingSwitch() {
+        val a = SimChar(
+            book(
+                """
+                [Statedef -1]
+                [State -1, go]
+                type = ChangeState
+                value = 300
+                triggerall = var(7) = 1
+                trigger1 = command = "x"
+                trigger1 = ctrl
+                [Statedef 0]
+                ctrl = 1
+                [Statedef 300]
+                anim = 200
+                ctrl = 0
+                [State 300, end]
+                type = ChangeState
+                value = 0
+                trigger1 = time >= 10
+                """.trimIndent(),
+            ),
+            { air[it] },
+        )
+        val take = Scenario.record(a, null, 300)
+        assertTrue(take != null, "cenário não achado")
+        assertTrue(take!!.scenario.contains("x") && take.scenario.contains("var(7)=1"), take.scenario)
+        assertTrue(take.attackerStates.contains(300))
+    }
+
+    @Test
+    fun scenarioGivesUpWhenNothingLeadsToTheState() {
+        val a = SimChar(book("[Statedef 0]\nctrl = 1\n[Statedef 300]\nanim = 200\n"), { air[it] })
+        assertTrue(Scenario.record(a, null, 300) == null)
+    }
 }

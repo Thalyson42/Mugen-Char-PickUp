@@ -21,7 +21,7 @@ class HitDefData(
 }
 
 /** Um personagem: os estados, as animações e as constantes dele. P1 e P2 podem ser personagens diferentes. */
-class SimChar(val book: StateBook, val anims: (Int) -> Animation?, val consts: Map<String, Double> = emptyMap())
+class SimChar(val book: StateBook, val anims: (Int) -> Animation?, val consts: Map<String, Double> = emptyMap(), val name: String = "P1")
 
 class SimEntity(val uid: Int, val name: String, val helperId: Int?, val parent: SimEntity?, val root: SimEntity?) {
     var state = 0
@@ -138,7 +138,9 @@ class SimFrame(
     val kind: String = "char",
     /** A quem pertence o lutador, helper ou efeito: 1 = lado do P1, 2 = lado do P2 (não é o mesmo que [side] quando a animação é emprestada). */
     val ownSide: Int = 1,
-)
+) {
+    fun withTick(t: Int) = SimFrame(t, who, state, anim, animFrom, x, y, facing, prio, remap, uid, animTick, side, kind, ownSide)
+}
 
 class Sim(
     val book: StateBook,
@@ -309,6 +311,9 @@ class Sim(
 
     /** Depuração: avalia uma expressão no contexto de [e] (null = não deu para saber). */
     fun debugEval(e: SimEntity, text: String): Any? = Expr.eval(prep(text, e), Ctx(e))
+
+    /** Verdade de uma expressão no contexto de [e]; null = não deu para saber. */
+    fun truthOf(e: SimEntity, text: String): Boolean? = Expr.truth(prep(text, e), Ctx(e))
 
     // ------------------------------------------------------------------ estados
 

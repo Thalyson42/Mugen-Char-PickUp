@@ -21,6 +21,10 @@ class SimTake(
     val tried: Boolean = false,
     /** A gravação foi cortada porque nada mais mudava (estado esperando algo que a simulação não fornece). */
     val stuck: Boolean = false,
+    /** Como se chegou aqui (comando apertado e ajustes assumidos, ex.: "z+holddown; var(26)=1"); vazio = entrada direta. */
+    val scenario: String = "",
+    /** Quantos ticks do começo foram cortados (preparação do cenário). */
+    val preludeTicks: Int = 0,
 ) {
     /** Quadros agrupados por tick (índice = tick). */
     val byTick: List<List<SimFrame>> = run {
@@ -101,7 +105,7 @@ object SimRunner {
         spacing: Double, p1: SimChar, p2: SimChar?, stateNo: Int, helperId: Int?, vars: Map<Int, Int>, rootVars: Map<Int, Int>,
         maxTicks: Int, coordY: Double, seed: Long, collide: Boolean,
     ): SimTake {
-        val sim = Sim(p1.book, p1.anims, collide = collide, consts = p1.consts, coordY = coordY, seed = seed)
+        val sim = Sim(p1.book, p1.anims, rootName = p1.name, collide = collide, consts = p1.consts, coordY = coordY, seed = seed)
         sim.enemyChar = p2
         val root = sim.spawnRoot(-spacing)
         sim.spawnEnemy(spacing)

@@ -486,6 +486,7 @@ fun CharacterView(viewer: ViewerViewModel, source: ViewerSource?, dialog: Int, o
                                 f.side == 1 && c.anims[f.anim]?.frames?.any { fr -> viewer.sprite(atkId, fr.group, fr.image) != null } == true
                             }
                             val parts = ArrayList<String>()
+                            if (take.scenario.isNotEmpty()) parts += "Cenário simulado: ${take.scenario}."
                             if (!visible) parts += "Nenhuma animação desse estado tem sprite visível, por isso o personagem some."
                             if (other != null) {
                                 if (take.hit) parts += "O adversário passa pelos estados ${take.enemyStates.joinToString(", ")}."
