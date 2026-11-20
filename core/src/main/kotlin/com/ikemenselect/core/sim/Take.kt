@@ -52,8 +52,8 @@ class SimTake(
 }
 
 object SimRunner {
-    /** Limite de segurança: 30 segundos de jogo. */
-    const val SAFETY_TICKS = 1800
+    /** Limite de segurança: 60 segundos de jogo (só para quando a simulação não termina sozinha nem fica parada). */
+    const val SAFETY_TICKS = 3600
 
     /** Quantos ticks seguidos sem nenhuma mudança contam como "travado" (2 segundos). */
     const val STUCK_TICKS = 120
@@ -80,11 +80,26 @@ object SimRunner {
         vars: Map<Int, Int> = emptyMap(),
         rootVars: Map<Int, Int> = emptyMap(),
         maxTicks: Int = SAFETY_TICKS,
-        spacing: Double = 30.0,
+        /** Distância de cada lutador ao centro; null = tenta 70 (a inicial do jogo) e, se o golpe não acertar, chega mais perto. */
+        spacing: Double? = null,
         coordY: Double = 240.0,
         seed: Long = 12345L,
         /** false = o HitDef acerta sem precisar das caixas se tocarem (só para testes). */
         collide: Boolean = true,
+    ): SimTake {
+        var first: SimTake? = null
+        for (sp in if (spacing != null) listOf(spacing) else listOf(70.0, 50.0, 35.0, 25.0)) {
+            val take = recordAt(sp, p1, p2, stateNo, helperId, vars, rootVars, maxTicks, coordY, seed, collide)
+            // o que não é ataque (ou já acertou) fica na distância normal; um ataque que errou tenta de mais perto
+            if (!take.tried || take.hit) return take
+            if (first == null) first = take
+        }
+        return first!!
+    }
+
+    private fun recordAt(
+        spacing: Double, p1: SimChar, p2: SimChar?, stateNo: Int, helperId: Int?, vars: Map<Int, Int>, rootVars: Map<Int, Int>,
+        maxTicks: Int, coordY: Double, seed: Long, collide: Boolean,
     ): SimTake {
         val sim = Sim(p1.book, p1.anims, collide = collide, consts = p1.consts, coordY = coordY, seed = seed)
         sim.enemyChar = p2

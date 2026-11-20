@@ -112,6 +112,9 @@ class SimFx(
     var removeOnGetHit = false
     var bindToEnemy = false
 
+    /** Acabou de nascer neste tick: a animação só começa a contar no próximo (como a dos lutadores). */
+    var fresh = true
+
     /** Ticks que continua andando mesmo durante Pause/SuperPause (`pausemovetime`/`supermovetime`). */
     var pauseMove = 0
 }
@@ -354,7 +357,13 @@ class Sim(
         val paused = pauseLeft > 0
         val pauserMoves = paused && pauseMoveLeft > 0
         if (paused) { pauseLeft--; if (pauseMoveLeft > 0) pauseMoveLeft-- }
-        for (e in entities.toList()) {
+        // quem nasce durante o tick (helpers) também roda neste mesmo tick, como no jogo: assim nasce em sincronia com quem o criou
+        val order = ArrayList(entities)
+        var oi = 0
+        while (true) {
+            if (pending.isNotEmpty()) { order += pending; entities += pending; pending.clear() }
+            if (oi >= order.size) break
+            val e = order[oi++]
             if (!e.alive) continue
             if (paused && !(e === pauser && pauserMoves)) continue
             if (e.hitPause > 0) { e.hitPause--; continue }
@@ -449,7 +458,7 @@ class Sim(
         for (f in fx.toList()) {
             if (!f.alive) continue
             if (pausedOnly) { if (f.pauseMove <= 0) continue; f.pauseMove-- }
-            f.animTick++
+            if (f.fresh) f.fresh = false else f.animTick++
             if (f.bindLeft != 0) {
                 val base = if (f.bindToEnemy) enemyOf(f.owner) else f.owner
                 f.x = base.x + base.facing * f.bindDx
